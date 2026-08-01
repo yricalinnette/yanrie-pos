@@ -23,7 +23,8 @@ class Product extends Model
         'delivery_date',
         'wholesale_price',
         'wholesale_qty',
-        'hide_from_alerts'
+        'hide_from_alerts',
+        'is_active'
     ];
 
     /**

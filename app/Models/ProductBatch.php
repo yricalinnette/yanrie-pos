@@ -20,6 +20,7 @@ class ProductBatch extends Model
         'cost_per_box',  
         'items_per_box', 
         'num_boxes',
+        'remarks'
     ];
 
     /**

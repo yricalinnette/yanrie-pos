@@ -399,8 +399,16 @@
                 <form wire:submit.prevent="saveProductRegistryEntry" class="space-y-5">
                     <div class="space-y-4">
                         <div>
-                            <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">SKU Barcode</label>
-                            <input type="text" wire:model.live.debounce.400ms="new_sku" x-ref="barcodeField" class="w-full px-3 py-2 bg-slate-50 border border-gray-300 rounded-xl text-sm font-mono font-bold text-gray-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none" placeholder="Scan item barcode..." autocomplete="off" @keydown.enter.prevent/>
+                            <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+                                SKU Barcode <span class="text-blue-500 font-normal lowercase">(Leave blank to auto-generate)</span>
+                            </label>
+                            <input type="text" 
+                                wire:model.live.debounce.400ms="new_sku" 
+                                x-ref="barcodeField" 
+                                class="w-full px-3 py-2 bg-slate-50 border border-gray-300 rounded-xl text-sm font-mono font-bold text-gray-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none" 
+                                placeholder="Scan barcode or press TAB to skip..." 
+                                autocomplete="off" 
+                                @keydown.enter.prevent />
                             @error('new_sku') <span class="text-[11px] font-bold text-red-500 mt-1 block">❌ {{ $message }}</span> @enderror
                         </div>
                         
@@ -634,7 +642,7 @@
                                         </td>
 
                                         <td class="p-3 text-right">
-                                            <div class="inline-flex gap-2">
+                                            <div class="inline-flex items-center gap-2">
                                                 <button type="button" wire:click="loadProductForEdit({{ $prod->id }})" class="bg-slate-100 hover:bg-amber-100 border border-slate-300 hover:border-amber-400 text-slate-700 hover:text-amber-800 font-semibold text-xs px-2.5 py-1.5 rounded-lg shadow-sm transition-all flex items-center gap-1">
                                                     📝 Edit
                                                 </button>
@@ -642,9 +650,19 @@
                                                 <button type="button" wire:click="openAuditAdjustmentModal({{ $prod->id }})" class="bg-white border border-gray-300 hover:border-blue-500 hover:text-blue-600 text-gray-700 font-semibold text-xs px-2.5 py-1.5 rounded-lg shadow-sm transition-all">
                                                     ⚙️ Adjust Stock
                                                 </button>
+
+                                                <!-- CUSTOM IS_ACTIVE ARCHIVE TRIGGER -->
                                                 <button type="button" 
-                                                        wire:click="viewHistory({{ $prod->id }})" 
-                                                        class="text-[10px] font-bold text-slate-400 hover:text-blue-600 uppercase tracking-tighter">
+                                                    wire:click="archiveProduct({{ $prod->id }})" 
+                                                    wire:confirm="Are you sure you want to archive this product? This updates status to inactive without hard-deleting the row."
+                                                    class="bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 text-red-600 font-semibold text-xs px-2.5 py-1.5 rounded-lg shadow-sm transition-all flex items-center gap-1"
+                                                >
+                                                    📦 Archive
+                                                </button>
+
+                                                <button type="button" 
+                                                    wire:click="viewHistory({{ $prod->id }})" 
+                                                    class="text-[10px] font-bold text-slate-400 hover:text-blue-600 uppercase tracking-tighter ml-1">
                                                     View History 🕒
                                                 </button>
                                             </div>
@@ -683,97 +701,166 @@
                 </div>
             @endif
 
-            <h2 class="text-xs font-bold text-gray-900 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <span>🌾</span> Rice Stock Management
-            </h2>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                    <thead>
-                        <tr class="border-b border-gray-200 text-gray-400 font-bold text-[11px] uppercase tracking-wider bg-gray-50/50">
-                            <th class="p-3">Product Name</th>
-                            <th class="p-3">SKU Barcode</th>
-                            <th class="p-3">Current Inventory Stock Level</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100 text-sm">
-                        @foreach($riceManagementProducts as $product)
-                            <tr wire:key="rice-mgmt-row-{{ $product->id }}" class="hover:bg-slate-50/40 transition-colors">
-                                <td class="p-3 font-medium text-gray-900">
-                                    <span class="font-bold text-sm text-gray-900">{{ $product->name }}</span>
-                                    @if($product->parent)
-                                        <span class="block text-[11px] text-gray-400 font-medium normal-case mt-0.5">
-                                            Base Rice Strain: {{ $product->parent->name }}
-                                        </span>
-                                    @endif
-                                </td>
-                                <td class="p-3 font-mono text-xs text-gray-500">{{ $product->sku }}</td>
-                                <td class="p-3">
-                                    <div class="flex items-center gap-3 flex-wrap">
-                                        <div>
-                                            <span class="font-bold text-gray-950 text-sm">
-                                                {{ $product->parent_id ? number_format($product->stock_level, 2) : number_format($product->stock_level, 0) }}
-                                            </span>
-                                            <span class="text-xs text-gray-400 font-medium ml-0.5">
-                                                {{ $product->parent_id ? 'kg' : 'sacks' }}
-                                            </span>
-                                        </div>
-                                        
-                                        @if($product->parent_id)
-                                            <div class="flex items-center gap-1.5 bg-gray-50 p-1.5 rounded-lg border border-gray-200 shadow-sm ml-auto">
-                                                <select wire:model.defer="selectedSackVariant.{{ $product->id }}" 
-                                                        class="text-xs font-bold rounded border-gray-300 bg-white py-1 px-2 text-gray-700 focus:ring-amber-500 focus:border-amber-500">
-                                                    <option value="">-- Choose Sack Size --</option>
-                                                    @php
-                                                        // 1. Clean out product structural keywords
-                                                        $cleanBaseName = preg_replace('/(50kg|25kg|10kg|5kg|Retail|Kilo|Loose|\(|\)|\/)/i', '', $product->name);
-                                                        
-                                                        // 2. Extract the absolute first root word identifier (e.g., "Aquarius" or "Don")
-                                                        $words = array_filter(explode(' ', trim($cleanBaseName)));
-                                                        $firstWord = reset($words); 
-
-                                                        // Handle composite naming schemes like "Don Roberto" vs "Senior Roberto"
-                                                        if (strtolower($firstWord) === 'don' || strtolower($firstWord) === 'senior') {
-                                                            $searchString = implode(' ', array_slice($words, 0, 2)); // Grabs "Don Roberto"
-                                                        } else {
-                                                            $searchString = $firstWord; // Grabs "Aquarius", catching both normal and "RED" variants
-                                                        }
-
-                                                        // 3. Query all package sacks matching our primary strain identifier
-                                                        $availableSizes = \App\Models\Product::where('category_id', 1)
-                                                            ->whereNull('parent_id')
-                                                            ->where('name', 'like', '%' . $searchString . '%')
-                                                            ->orderBy('conversion_factor', 'desc')
-                                                            ->get();
-                                                    @endphp
-                                                    @foreach($availableSizes as $sizeOpt)
-                                                        <option value="{{ $sizeOpt->id }}">
-                                                            {{ $sizeOpt->name }} (In Stock: {{ number_format($sizeOpt->stock_level, 0) }})
-                                                        </option>
-                                                    @endforeach
-                                                </select>
-
-                                                <select wire:model.defer="sackQuantities.{{ $product->id }}" 
-                                                        class="text-xs font-bold rounded border-gray-300 bg-white py-1 px-1.5 text-gray-700 focus:ring-amber-500 focus:border-amber-500 w-14">
-                                                    @for($i = 1; $i <= 5; $i++)
-                                                        <option value="{{ $i }}">{{ $i }}×</option>
-                                                    @endfor
-                                                </select>
-
-                                                <button wire:click="breakSack({{ $product->id }})" 
-                                                        wire:confirm="Are you sure you want to open and decant this stock into the retail rice box?"
-                                                        wire:loading.attr="disabled"
-                                                        type="button" 
-                                                        class="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:bg-gray-300 text-white text-[10px] font-bold rounded transition-all uppercase tracking-wider flex items-center gap-1">
-                                                    <span>🔓</span> Add to Ricebox
-                                                </button>
-                                            </div>
-                                        @endif
-                                    </div>
-                                </td>
+            <div>
+                <h2 class="text-xs font-bold text-gray-900 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <span>🌾</span> Rice Stock Management
+                </h2>
+                <div class="overflow-x-auto bg-white rounded-xl border border-gray-100 shadow-sm">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="border-b border-gray-200 text-gray-400 font-bold text-[11px] uppercase tracking-wider bg-gray-50/50">
+                                <th class="p-3">Product Name</th>
+                                <th class="p-3">SKU Barcode</th>
+                                <th class="p-3">Current Inventory Stock Level</th>
                             </tr>
-                        @endforeach
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100 text-sm">
+                            @foreach($riceManagementProducts as $product)
+                                <tr wire:key="rice-mgmt-row-{{ $product->id }}" class="hover:bg-slate-50/40 transition-colors">
+                                    <td class="p-3 font-medium text-gray-900">
+                                        <span class="font-bold text-sm text-gray-900">{{ $product->name }}</span>
+                                        @if($product->parent)
+                                            <span class="block text-[11px] text-gray-400 font-medium normal-case mt-0.5">
+                                                Base Rice Strain: {{ $product->parent->name }}
+                                            </span>
+                                        @endif
+                                    </td>
+                                    <td class="p-3 font-mono text-xs text-gray-500">{{ $product->sku }}</td>
+                                    <td class="p-3">
+                                        <div class="flex items-center gap-3 flex-wrap">
+                                            <div>
+                                                <span class="font-bold text-gray-950 text-sm">
+                                                    {{ $product->parent_id ? number_format($product->stock_level, 2) : number_format($product->stock_level, 0) }}
+                                                </span>
+                                                <span class="text-xs text-gray-400 font-medium ml-0.5">
+                                                    {{ $product->parent_id ? 'kg' : 'sacks' }}
+                                                </span>
+                                            </div>
+                                            
+                                            @if($product->parent_id)
+                                                <div class="flex items-center gap-1.5 bg-gray-50 p-1.5 rounded-lg border border-gray-200 shadow-sm ml-auto flex-wrap sm:flex-nowrap">
+                                                    <select wire:model.defer="selectedSackVariant.{{ $product->id }}" 
+                                                            class="text-xs font-bold rounded border-gray-300 bg-white py-1 px-2 text-gray-700 focus:ring-amber-500 focus:border-amber-500">
+                                                        <option value="">-- Choose Sack Size --</option>
+                                                        @php
+                                                            $cleanBaseName = preg_replace('/(50kg|25kg|10kg|5kg|Retail|Kilo|Loose|\(|\)|\/)/i', '', $product->name);
+                                                            $words = array_filter(explode(' ', trim($cleanBaseName)));
+                                                            $firstWord = reset($words); 
+
+                                                            if (strtolower($firstWord) === 'don' || strtolower($firstWord) === 'senior') {
+                                                                $searchString = implode(' ', array_slice($words, 0, 2));
+                                                            } else {
+                                                                $searchString = $firstWord;
+                                                            }
+
+                                                            $availableSizes = \App\Models\Product::where('category_id', 1)
+                                                                ->whereNull('parent_id')
+                                                                ->where('name', 'like', '%' . $searchString . '%')
+                                                                ->orderBy('conversion_factor', 'desc')
+                                                                ->get();
+                                                        @endphp
+                                                        @foreach($availableSizes as $sizeOpt)
+                                                            <option value="{{ $sizeOpt->id }}">
+                                                                {{ $sizeOpt->name }} (In Stock: {{ number_format($sizeOpt->stock_level, 0) }})
+                                                            </option>
+                                                        @endforeach
+                                                    </select>
+
+                                                    <select wire:model.defer="sackQuantities.{{ $product->id }}" 
+                                                            class="text-xs font-bold rounded border-gray-300 bg-white py-1 px-1.5 text-gray-700 focus:ring-amber-500 focus:border-amber-500 w-14">
+                                                        @for($i = 1; $i <= 5; $i++)
+                                                            <option value="{{ $i }}">{{ $i }}×</option>
+                                                        @endfor
+                                                    </select>
+
+                                                    <input type="date" 
+                                                        wire:model="backdatedSackDate.{{ $product->id }}"
+                                                        class="text-xs font-semibold rounded border-gray-300 bg-white py-1 px-1.5 text-gray-600 focus:ring-amber-500 focus:border-amber-500 max-w-[130px]">
+
+                                                    <button wire:click="breakSack({{ $product->id }})" 
+                                                            wire:confirm="Are you sure you want to open and decant this stock into the retail rice box?"
+                                                            wire:loading.attr="disabled"
+                                                            type="button" 
+                                                            class="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:bg-gray-300 text-white text-[10px] font-bold rounded transition-all uppercase tracking-wider flex items-center gap-1 whitespace-nowrap">
+                                                        <span>🔓</span> Add to Ricebox
+                                                    </button>
+                                                </div>
+                                            @endif
+                                        </div>
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mt-8">
+                    <h3 class="text-xs font-bold text-gray-900 uppercase tracking-wider mb-3 flex items-center gap-2">
+                        <span>📋</span> Recent Ricebox Ricebox Logs (Backtracking)
+                    </h3>
+                    <div class="overflow-x-auto bg-white rounded-xl border border-gray-100 shadow-sm">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="border-b border-gray-200 text-gray-400 font-bold text-[11px] uppercase tracking-wider bg-gray-50/50">
+                                    <th class="p-3">Date & Time</th>
+                                    <th class="p-3">Action Details</th>
+                                    <th class="p-3 text-right">Stock Added</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 text-xs font-mono text-gray-600">
+                                @php
+                                    $riceProductIds = $riceManagementProducts->pluck('id')->toArray();
+
+                                    $conversionLogs = \DB::table('product_batches')
+                                        ->whereIn('product_id', $riceProductIds)
+                                        ->where(function($query) {
+                                            $query->where('num_boxes', '>', 0)
+                                                ->where('items_per_box', '>', 0);
+                                        })
+                                        ->latest()
+                                        ->take(5)
+                                        ->get();
+                                        
+                                    $productNames = $riceManagementProducts->pluck('name', 'id')->toArray();
+                                @endphp
+
+                                @forelse($conversionLogs as $log)
+                                    @php
+                                        $currentProductName = $productNames[$log->product_id] ?? 'Rice Variety';
+                                        $cleanName = preg_replace('/(Retail|Kilo|Loose|\(|\)|\/)/i', '', $currentProductName);
+                                    @endphp
+                                    <tr class="hover:bg-slate-50/50 transition-colors">
+                                        <td class="p-3 text-gray-900 font-bold whitespace-nowrap">
+                                            {{ \Carbon\Carbon::parse($log->created_at)->timezone('Asia/Manila')->format('Y-m-d h:i A') }}
+                                        </td>
+                                        <td class="p-3 text-gray-700 normal-case font-sans font-medium">
+                                            <div>
+                                                Added <span class="font-bold text-gray-950">{{ (int)$log->num_boxes }} sack(s)</span> into the ricebox for <span class="font-bold text-gray-950">{{ trim($cleanName) }} retail</span> ({{ (int)$log->items_per_box }}kg per sack).
+                                            </div>
+                                            
+                                            {{-- Check if remarks are stored to accurately expose historical backdated data --}}
+                                            @if(!empty($log->remarks))
+                                                <div class="mt-1 text-[11px] text-amber-600 font-semibold flex items-center gap-1 bg-amber-50 rounded px-2 py-0.5 w-fit border border-amber-100 font-mono">
+                                                    <span>📅 Backtracked Inventory Entry Date:</span>
+                                                    <span class="underline text-amber-800">{{ \Carbon\Carbon::parse($log->delivery_date)->format('Y-m-d') }}</span>
+                                                </div>
+                                            @endif
+                                        </td>
+                                        <td class="p-3 text-right text-emerald-600 font-bold font-mono text-sm whitespace-nowrap">
+                                            +{{ number_format($log->quantity_added, 2) }} kg
+                                        </td>
+                                    </tr>
+                                @empty
+                                    <tr>
+                                        <td colspan="3" class="p-4 text-center text-gray-400 font-sans normal-case italic">
+                                            No recent ricebox decanting records found.
+                                        </td>
+                                    </tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -1199,7 +1286,6 @@
             @checkout-completed.window="triggerDrawerRelay()"
             class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto p-4 flex justify-center"
         >
-            
             <div class="bg-white rounded-2xl shadow-2xl p-5 max-w-[340px] w-full border border-gray-100 flex flex-col h-fit my-auto md:my-8 animate-in fade-in zoom-in-95 duration-150">
                 
                 <div class="overflow-y-auto pr-1 max-h-[65vh] custom-receipt-scrollbar" style="scrollbar-width: thin; -webkit-overflow-scrolling: touch;">
@@ -1221,46 +1307,42 @@
                                     $unit = $isRiceRetail ? 'kg' : ($dbItem->quantity > 1 ? 'pcs' : 'pc');
                                     $formattedQty = $isRiceRetail ? number_format($dbItem->quantity, 2) : (float)$dbItem->quantity;
                                 @endphp
-                                <div class="block">
-                                    <p class="font-black text-sm uppercase tracking-tight text-gray-950">{{ $itemName }}</p>
-                                    <div class="flex justify-between items-center text-sm text-gray-700 mt-0.5 pl-1">
-                                        <span>{{ $formattedQty }} {{ $unit }} × ₱{{ number_format($dbItem->unit_price, 2) }}</span>
-                                        <span class="font-black text-gray-950">₱{{ number_format($dbItem->subtotal, 2) }}</span>
+                                <div class="block-item">
+                                    <p class="font-black text-sm uppercase tracking-tight text-gray-950 item-title">{{ $itemName }}</p>
+                                    <div class="data-row flex justify-between items-end text-sm text-gray-700 mt-0.5 pl-1 w-full">
+                                        <span class="qty-calc-col whitespace-nowrap">{{ $formattedQty }}{{ $unit }}×₱{{ number_format($dbItem->unit_price, 2) }}</span>
+                                        <span class="total-price-col font-black text-gray-950 whitespace-nowrap pr-2">₱{{ number_format($dbItem->subtotal, 2) }}</span>
                                     </div>
                                 </div>
                             @endforeach
                         </div>
 
-                        <div class="space-y-1 text-sm">
-                            <div class="flex justify-between text-gray-600">
-                                <span>Subtotal:</span>
-                                <span>₱{{ number_format($lastSale->total_amount + $lastSale->discount, 2) }}</span>
+                        <!-- Breakdown Section -->
+                        <div class="space-y-1 text-sm calculation-rows w-full">
+                            <div class="font-bold text-sm text-gray-950 pt-0.5 data-row flex justify-between items-end w-full">
+                                <span>TOTAL DUE:</span>
+                                <span class="text-base font-black pr-2">₱{{ number_format($lastSale->total_amount, 2) }}</span>
                             </div>
 
                             @if($lastSale->discount > 0)
-                                <div class="flex justify-between text-red-600 font-bold">
-                                    <span>Discount:</span>
-                                    <span>-₱{{ number_format($lastSale->discount, 2) }}</span>
+                                <div class="text-red-600 font-bold data-row flex justify-between items-end w-full">
+                                    <span>DISCOUNT:</span>
+                                    <span class="pr-2">-₱{{ number_format($lastSale->discount, 2) }}</span>
                                 </div>
                             @endif
 
-                            <div class="flex justify-between text-gray-700">
-                                <span>Cash Paid:</span>
-                                <span>₱{{ number_format($lastSale->amount_paid, 2) }}</span>
+                            <div class="text-gray-700 data-row flex justify-between items-end w-full">
+                                <span>CASH PAID:</span>
+                                <span class="pr-2">₱{{ number_format($lastSale->amount_paid, 2) }}</span>
                             </div>
 
-                            <div class="flex justify-between items-center font-bold text-sm text-gray-950 pt-1.5 border-t border-gray-400 mt-1">
-                                <span>TOTAL DUE:</span>
-                                <span class="text-base font-black">₱{{ number_format($lastSale->total_amount, 2) }}</span>
-                            </div>
-
-                            <div class="flex justify-between items-center font-bold text-sm text-gray-900 pt-0.5">
+                            <div class="font-bold text-sm text-gray-900 pt-1 border-t border-dashed border-gray-400 mt-1 data-row flex justify-between items-end w-full">
                                 <span>CHANGE DUE:</span>
-                                <span class="text-sm font-black">₱{{ number_format($lastSale->change_amount, 2) }}</span>
+                                <span class="text-sm font-black pr-2">₱{{ number_format($lastSale->change_amount, 2) }}</span>
                             </div>
                         </div>
 
-                        <div class="text-center mt-4 pt-2 border-t border-dashed border-gray-400 text-xs text-gray-600">
+                        <div class="text-center mt-4 pt-2 border-t border-dashed border-gray-400 text-xs text-gray-600 footer-area">
                             <p class="font-bold uppercase tracking-wider text-gray-800">Thank you!</p>
                             <p class="text-[10px] text-gray-400 mt-1.5 leading-tight">Note: For internal tracking purposes only — not an official receipt. Please ask for official receipt.</p>
                         </div>
@@ -1270,110 +1352,95 @@
                 <div class="mt-4 grid grid-cols-2 gap-2 text-xs pt-3 border-t border-gray-100 shrink-0">
                     <button 
                         @click="
-                            let w = window.open('', '_blank', 'width=360,height=700');
-                            w.document.write(`
-                                <html>
-                                <head>
-                                    <title>POS Print</title>
-                                    <style>
-                                        * { box-sizing: border-box; margin: 0; padding: 0; font-weight: 800 !important; }
-                                        @page { margin: 0; size: 58mm auto; }
-                                        html, body { background: #ffffff !important; }
-                                        body { 
-                                            margin: 0; 
-                                            padding: 10px 14px; 
-                                            font-family: 'Courier New', Courier, monospace, system-ui; 
-                                            font-size: 10px; 
-                                            line-height: 1.3; 
-                                            color: #000000; 
-                                            width: 100%;
-                                            max-width: 58mm;
-                                            -webkit-font-smoothing: antialiased;
-                                        }
-                                        .text-center { text-align: center; }
-                                        .bold { font-weight: 900 !important; }
-                                        .line-divider { border-bottom: 2px dashed #000000; margin: 8px 0; }
-                                        .row { display: flex; justify-content: space-between; clear: both; width: 100%; }
-                                        .item-row { margin-bottom: 6px; }
-                                        .item-details { padding-left: 4px; }
-                                        .footer-text { font-size: 9px; color: #000; margin-top: 14px; line-height: 1.2; text-align: center; font-weight: normal !important; }
-                                        .large-text { font-size: 11px; font-weight: 900 !important; }
-                                    </style>
-                                </head>
-                                <body>
-                                    <div class='text-center'>
-                                        <span class='large-text'>YANRIE VARIETY STORE</span><br>
-                                        <span>Date: {{ $lastSale->created_at->timezone('Asia/Manila')->format('y-m-d H:i') }}</span><br>
-                                        <span>OR ID: #{{ str_pad($lastSale->id, 5, '0', STR_PAD_LEFT) }}</span>
-                                    </div>
+                            let content = document.getElementById('printable-receipt-area').innerHTML;
+                            
+                            let htmlDoc = `<!DOCTYPE html>
+                            <html>
+                            <head>
+                                <meta charset='utf-8'>
+                                <meta http-equiv='Content-Type' content='text/html; charset=utf-8'>
+                                <title>POS Print</title>
+                                <style>
+                                    * { box-sizing: border-box; margin: 0; padding: 0; font-weight: 900 !important; }
+                                    @page { margin: 0; size: 58mm auto; }
+                                    html, body { background: #ffffff !important; color: #000000; width: 100%; max-width: 42mm; }
+                                    body { margin: 0; padding: 6px 0px 6px 2px; font-family: 'Courier New', Courier, monospace, system-ui; font-size: 11px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
+                                    .text-center { text-align: center; } 
+                                    .uppercase { text-transform: uppercase; } 
+                                    .mt-0.5 { margin-top: 2px; } 
+                                    .mt-1 { margin-top: 4px; } 
+                                    .mt-4 { margin-top: 12px; } 
+                                    .mb-2 { margin-bottom: 4px; }
+                                    .pb-2 { padding-bottom: 4px; } 
+                                    .pt-1.5 { padding-top: 4px; } 
+                                    .pt-0.5 { padding-top: 1px; } 
+                                    .pt-2 { padding-top: 4px; } 
+                                    .pl-1 { padding-left: 2px; }
+                                    .border-b { border-bottom: 1px dashed #000000; } 
+                                    .border-t { border-top: 1px dashed #000000; }
+                                    .font-black, .font-bold { font-weight: 900 !important; } 
+                                    h2 { font-size: 12px; line-height: 1.3; padding-bottom: 2px !important; } 
+                                    .text-xs { font-size: 9px; }
+                                    .space-y-2 > * + * { margin-top: 6px; } 
+                                    .space-y-1 > * + * { margin-top: 3px; }
+                                    .text-gray-400, .text-gray-500, .text-gray-600, .text-gray-700 { color: #000000 !important; }
+                                    
+                                    .data-row { 
+                                        display: flex !important; 
+                                        width: 100% !important; 
+                                        justify-content: space-between !important;
+                                        align-items: flex-end !important;
+                                        padding-bottom: 4px !important;
+                                    }
+                                    .qty-calc-col { 
+                                        text-align: left !important; 
+                                        white-space: nowrap !important;
+                                        padding-right: 4px !important;
+                                    }
+                                    .total-price-col, .data-row > span:last-child { 
+                                        text-align: right !important; 
+                                        white-space: nowrap !important;
+                                        padding-right: 8px !important; 
+                                    }
+                                    .calculation-rows {
+                                        display: block !important;
+                                        width: 100% !important;
+                                        margin-top: 4px !important;
+                                    }
+                                    .block-item {
+                                        display: block !important;
+                                        width: 100% !important;
+                                        padding-bottom: 3px !important;
+                                    }
+                                    .item-title {
+                                        display: block !important;
+                                        width: 100% !important;
+                                        line-height: 1.3 !important;
+                                        padding-bottom: 1px !important;
+                                        word-wrap: break-word;
+                                        white-space: normal;
+                                    }
+                                    .footer-area p {
+                                        line-height: 1.3 !important;
+                                        padding-bottom: 2px !important;
+                                    }
+                                </style>
+                            </head>
+                            <body>` + content + `</body>
+                            </html>`;
 
-                                    <div class='line-divider'></div>
+                            let blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8' });
+                            let blobUrl = URL.createObjectURL(blob);
 
-                                    <div>
-                                        @foreach($lastSale->items()->with('product')->get() as $dbItem)
-                                            @php
-                                                $itemName = $dbItem->product->name ?? $dbItem->product_name ?? 'Unknown Item';
-                                                $sku = strtolower($dbItem->product->sku ?? '');
-                                                $isRiceRetail = str_starts_with($sku, 'kilo');
-                                                
-                                                $unit = $isRiceRetail ? 'kg' : ($dbItem->quantity > 1 ? 'pcs' : 'pc');
-                                                $formattedQty = $isRiceRetail ? number_format($dbItem->quantity, 2) : (float)$dbItem->quantity;
-                                            @endphp
-                                            <div class='item-row'>
-                                                <div class='bold'>{{ strtoupper($itemName) }}</div>
-                                                <div class='row item-details'>
-                                                    <span>{{ $formattedQty }} {{ $unit }} × ₱{{ number_format($dbItem->unit_price, 2) }}</span>
-                                                    <span class='bold'>₱{{ number_format($dbItem->subtotal, 2) }}</span>
-                                                </div>
-                                            </div>
-                                        @endforeach
-                                    </div>
-
-                                    <div class='line-divider'></div>
-
-                                    <div style='display: flex; flex-direction: column; gap: 4px;'>
-                                        <div class='row'>
-                                            <span>Subtotal:</span>
-                                            <span>₱{{ number_format($lastSale->total_amount + $lastSale->discount, 2) }}</span>
-                                        </div>
-
-                                        @if($lastSale->discount > 0)
-                                            <div class='row bold'>
-                                                <span>Discount:</span>
-                                                <span>-₱{{ number_format($lastSale->discount, 2) }}</span>
-                                            </div>
-                                        @endif
-
-                                        <div class='row'>
-                                            <span>Cash Paid:</span>
-                                            <span>₱{{ number_format($lastSale->amount_paid, 2) }}</span>
-                                        </div>
-
-                                        <div class='row bold' style='border-top: 2px solid #000000; padding-top: 4px; margin-top: 2px;'>
-                                            <span class='large-text'>TOTAL DUE:</span>
-                                            <span class='large-text'>₱{{ number_format($lastSale->total_amount, 2) }}</span>
-                                        </div>
-
-                                        <div class='row bold'>
-                                            <span>CHANGE DUE:</span>
-                                            <span>₱{{ number_format($lastSale->change_amount, 2) }}</span>
-                                        </div>
-                                    </div>
-
-                                    <div class='line-divider'></div>
-
-                                    <div class='text-center'>
-                                        <span class='bold text-center'>THANK YOU!</span>
-                                    </div>
-                                    <p class='footer-text'>Note: For internal tracking purposes only — not an official receipt. Please ask for official receipt.</p>
-                                </body>
-                                </html>
-                            `);
-                            w.document.close();
-                            w.focus();
-                            w.print();
-                            w.close();
-
+                            let w = window.open(blobUrl, '_blank', 'width=360,height=700');
+                            if (w) {
+                                w.focus();
+                                setTimeout(() => { 
+                                    w.print(); 
+                                    w.close();
+                                    URL.revokeObjectURL(blobUrl);
+                                }, 250);
+                            }
                             $wire.closeReceipt();
                         " 
                         type="button"
@@ -2131,6 +2198,38 @@
                     </div>
                 @endif
             </div>
+
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div class="space-y-1">
+                        <h3 class="text-xs font-black uppercase text-gray-400 tracking-wider flex items-center gap-1">
+                            🛡️ System Administration & Recovery
+                        </h3>
+                        <h4 class="text-base font-bold text-gray-900">
+                            On-Demand Database Backup
+                        </h4>
+                        <p class="text-xs text-gray-500 leading-relaxed max-w-2xl">
+                            Download a standalone SQL export structure copy of your application's transaction history logs, supplier entities, and product tracking metrics to safely secure cold-storage local backups.
+                        </p>
+                    </div>
+                    <div class="flex-shrink-0">
+                        <button type="button" 
+                                wire:click="downloadDatabaseBackup" 
+                                wire:loading.attr="disabled"
+                                class="w-full md:w-auto px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold uppercase tracking-wider rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50">
+                            <span wire:loading.remove wire:target="downloadDatabaseBackup">📥 Export SQL Backup</span>
+                            <span wire:loading wire:target="downloadDatabaseBackup" class="inline-flex items-center gap-2">
+                                <svg class="animate-spin h-3 w-3 text-white" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Bundling Assets...
+                            </span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
         </div>
 
         @if($show_category_modal)
@@ -2152,7 +2251,6 @@
             </div>
         @endif
 
-        <!-- Suppliers Modal -->
         @if($show_supplier_modal)
             <div class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
                 <div class="bg-white p-6 rounded-2xl border shadow-xl w-full max-w-lg mx-4 animate-in zoom-in-95 duration-150">
@@ -2208,28 +2306,38 @@
             
             <!-- 💼 CONFIGURATION CONTROL & TIMEFRAME SCOPE FILTER BAR -->
             <div class="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <!-- Left Info Block -->
                 <div>
                     <h2 class="text-sm font-black text-gray-800 uppercase tracking-wide">💼 Digital Capital Desk</h2>
                     <p class="text-xs text-gray-400">Track and monitor your actual cash drawer vs. digital phone bank funds live.</p>
                 </div>
                 
-                <!-- Livewire Dynamic Filters Engine -->
                 <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
-                    <!-- Mode Switcher -->
+                    <select wire:model.live="filter_service" class="text-xs font-bold p-2.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none">
+                        <option value="">💼 All Services</option>
+                        
+                        <optgroup label="Customer Services">
+                            <option value="gcash_cash_in">📱 GCash - Cash In</option>
+                            <option value="gcash_cash_out">📤 GCash - Cash Out</option>
+                            <option value="eload">⚡ E-Loading Platform</option>
+                        </optgroup>
+
+                        <optgroup label="Store Balance Refilling">
+                            <option value="drawer_to_gcash_refill">🔄 Drawer Cash ➡️ GCash</option>
+                            <option value="gcash_to_drawer_refill">💰 GCash ➡️ Cash Drawer</option>
+                        </optgroup>
+                    </select>
+
                     <select wire:model.live="filter_type" class="text-xs font-bold p-2.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none">
                         <option value="daily">📅 Daily</option>
                         <option value="monthly">🗓️ Monthly</option>
                     </select>
 
-                    <!-- Context-Sensitive Input Selectors -->
                     @if($filter_type === 'daily')
                         <input type="date" wire:model.live="filter_date" class="text-xs font-bold p-2.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
                     @else
                         <input type="month" wire:model.live="filter_month" class="text-xs font-bold p-2.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
                     @endif
 
-                    <!-- Add/Replenish Trigger -->
                     <button type="button" wire:click="$toggle('show_capital_form')" class="text-xs bg-slate-900 hover:bg-slate-800 text-white font-bold px-4 py-2.5 rounded-xl transition-all uppercase tracking-wider shadow-sm ml-auto md:ml-0">
                         {{ $show_capital_form ? '🙈 Close Tool' : '➕ Add/Replenish Funds' }}
                     </button>

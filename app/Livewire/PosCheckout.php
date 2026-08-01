@@ -13,6 +13,7 @@ use App\Models\StockAdjustment;
 use App\Services\PosService;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
 use Exception;
 
@@ -129,6 +130,8 @@ class PosCheckout extends Component
     
     public $selectedSackVariant = [];
     public $sackQuantities = [];
+    public $backdatedSackDate = [];
+    public $filter_service = '';
 
     public function togglePriceMode()
     {
@@ -336,6 +339,9 @@ class PosCheckout extends Component
         // Retrieve input values from state arrays or fall back to defaults
         $chosenVariantId = $this->selectedSackVariant[$productId] ?? null;
         $sacksToConvert = (int)($this->sackQuantities[$productId] ?? 1);
+        
+        // Get chosen backtrack date from the datepicker input array
+        $customDate = $this->backdatedSackDate[$productId] ?? null;
 
         // Guard 1: Enforce a selection choice
         if (!$chosenVariantId) {
@@ -360,30 +366,46 @@ class PosCheckout extends Component
 
         $totalKilosToAdd = $weightPerUnit * $sacksToConvert;
 
+        // Strict Date Assignment: Locks down the final delivery date to your custom selection
+        if (!empty($customDate)) {
+            $timestamp = \Carbon\Carbon::createFromFormat('Y-m-d', $customDate, 'Asia/Manila')
+                ->setTime(now('Asia/Manila')->hour, now('Asia/Manila')->minute, now('Asia/Manila')->second);
+            $finalDeliveryDate = $customDate; 
+        } else {
+            $timestamp = now('Asia/Manila');
+            $finalDeliveryDate = $timestamp->format('Y-m-d');
+        }
+
         // DB Transaction execution block
-        DB::transaction(function () use ($wholesaleProduct, $retailProduct, $sacksToConvert, $totalKilosToAdd, $weightPerUnit) {
+        DB::transaction(function () use ($wholesaleProduct, $retailProduct, $sacksToConvert, $totalKilosToAdd, $weightPerUnit, $finalDeliveryDate, $timestamp) {
             // 1. Deduct chosen count directly from specific packaging variant stock
             $wholesaleProduct->decrement('stock_level', $sacksToConvert);
 
             // 2. Deposit calculated net poundage weight straight into loose display box counter
             $retailProduct->increment('stock_level', $totalKilosToAdd);
 
-            // 🚀 3. LOG BATCH LOGS TRAIL FOR AUDITING PROCUREMENT
+            // 🚀 3. LOG BATCH TRAIL FOR AUDITING AND BACKTRACKING
+            $formattedTimestamp = $timestamp->toDateTimeString();
+
             $retailProduct->batches()->create([
                 'supplier_id'    => $wholesaleProduct->supplier_id ?: null,
                 'cost_price'     => (float)$retailProduct->cost_price, 
                 'selling_price'  => (float)$retailProduct->selling_price, 
                 'quantity_added' => (float)$totalKilosToAdd,
-                'delivery_date'  => date('Y-m-d'),
+                'delivery_date'  => $finalDeliveryDate,
                 'num_boxes'      => $sacksToConvert,
                 'items_per_box'  => (int)$weightPerUnit,
-                'cost_per_box'   => (float)$wholesaleProduct->cost_price, 
+                'cost_per_box'   => (float)$wholesaleProduct->cost_price,
+                'remarks'        => "Added Ricebox conversion from " . ($wholesaleProduct->name ?? 'Sack'),
+                'created_at'     => $formattedTimestamp, 
+                'updated_at'     => $formattedTimestamp,
             ]);
         });
 
         // Reset loop state tracking arrays for this row item
         unset($this->selectedSackVariant[$productId]);
         unset($this->sackQuantities[$productId]);
+        unset($this->backdatedSackDate[$productId]);
 
         session()->flash('message', "Successfully split {$sacksToConvert} sack(s) of {$wholesaleProduct->name}! Injected +{$totalKilosToAdd}kg into loose retail stock bins.");
     }
@@ -665,8 +687,9 @@ class PosCheckout extends Component
 
     public function render()
     {
-        // 🌾 Fetch all Rice management items completely separate from pagination
+        // 🌾 Fetch all ACTIVE Rice management items completely separate from pagination
         $riceManagementProducts = Product::with(['category', 'parent'])
+            ->where('is_active', 1) // 📦 Only include active products
             ->where(function($query) {
                 $query->whereHas('category', function($q) {
                     $q->where('name', 'like', '%rice%');
@@ -675,8 +698,9 @@ class PosCheckout extends Component
             ->orderBy('name', 'asc')
             ->get();
 
-        // 1. Core Catalog Search Query
+        // 1. Core Catalog Search Query (ACTIVE products only)
         $products = Product::with(['category', 'supplier']) // 🚀 Eager load supplier model relation entries
+            ->where('is_active', 1) // 📦 Scopes out archived products from the inventory table
             ->where(function($query) {
                 $query->where('name', 'like', '%' . $this->search . '%')
                     ->orWhere('sku', 'like', '%' . $this->search . '%');
@@ -689,9 +713,11 @@ class PosCheckout extends Component
             })
             ->paginate(12, ['*'], 'productsPage');
 
-        $lowStockCount = \App\Models\Product::where('hide_from_alerts', false)
-        ->whereRaw('stock_level <= low_stock_threshold')
-        ->count();
+        // 📦 Low Stock Counter (Updated to ignore archived products)
+        $lowStockCount = \App\Models\Product::where('is_active', 1) 
+            ->where('hide_from_alerts', false)
+            ->whereRaw('stock_level <= low_stock_threshold')
+            ->count();
 
         // ⚙️ SETTINGS ENGINE: Fresh Database Library Source Queries (Sorted Alphabetically)
         $categoriesAlphabetical = \App\Models\Category::orderBy('name', 'asc')->get();
@@ -814,7 +840,7 @@ class PosCheckout extends Component
                         if (($this->reports_sub_tab ?? '') === 'other_products') {
                             if ($isRice) continue; // CRITICAL: Exclude any Rice totals completely from calculations
 
-                            // ✨ FIX: Apply the dynamic category filter condition during deep metric extraction
+                            // Apply the dynamic category filter condition during deep metric extraction
                             if (!empty($this->other_product_category) && is_numeric($this->other_product_category)) {
                                 if ($productCategoryId !== (int)$this->other_product_category) continue;
                             }
@@ -823,17 +849,28 @@ class PosCheckout extends Component
                         $hasMatchingItems = true;
 
                         $actualUnitPricePaid = (float)($item->unit_price ?? ($item->price ?? ($item->product->selling_price ?? 0.00)));
-                        $unitCost = (float)$item->product->cost_price;
+                        
+                        // Fetch the purchase item cost from historical row or product master fallback safely
+                        $unitCost = (float)($item->cost_price ?? ($item->product->cost_price ?? 0.00));
                         $quantity = (float)$item->quantity;
 
                         $itemTotalPrice = $actualUnitPricePaid * $quantity;
                         $saleGrossRevenue += $itemTotalPrice;
 
+                        // 🛠️ FIX: Determine if unitCost represents a single item or a whole package to avoid inflation
                         if (!empty($item->is_wholesale)) {
-                            $multiplier = ($item->product->wholesale_qty > 0) ? (float)$item->product->wholesale_qty : 1.0;
-                            $totalCostForThisPackage = $unitCost * $multiplier;
-                            $saleGrossMargin += ($actualUnitPricePaid - $totalCostForThisPackage) * $quantity;
+                            // Check if cost_price inside database is already wholesale (e.g. > single unit retail item price)
+                            if ($unitCost > $actualUnitPricePaid) {
+                                // The database stored cost price is already a large sack wholesale value, treat as single item package cost
+                                $saleGrossMargin += ($itemTotalPrice - ($unitCost * $quantity));
+                            } else {
+                                // The database tracks singular base kg cost, apply the package scale multiplier
+                                $multiplier = ($item->product->wholesale_qty > 0) ? (float)$item->product->wholesale_qty : 1.0;
+                                $totalCostForThisPackage = $unitCost * $multiplier;
+                                $saleGrossMargin += ($actualUnitPricePaid - $totalCostForThisPackage) * $quantity;
+                            }
                         } else {
+                            // Standard Retail Math: Total Item Paid minus Total Base Cost Matrix
                             $saleGrossMargin += ($actualUnitPricePaid - $unitCost) * $quantity;
                         }
                     }
@@ -975,7 +1012,12 @@ class PosCheckout extends Component
         // 📱 For digital transactions =================
         $digitalQuery = \App\Models\DigitalTransaction::where('is_active', true);
 
-        // Apply Timeframe Scope Filter dynamically
+        // 🔥 1. Apply Service Type Filter Dropdown Dynamically
+        if (!empty($this->filter_service)) {
+            $digitalQuery->where('service_type', $this->filter_service);
+        }
+
+        // 2. Apply Timeframe Scope Filter dynamically
         if ($this->filter_type === 'daily') {
             $digitalQuery->whereDate('logged_at', $this->filter_date);
         } else {
@@ -984,6 +1026,7 @@ class PosCheckout extends Component
                         ->whereMonth('logged_at', $carbonMonth->month);
         }
 
+        // Execute Paginated Query for the history log table matrix
         $digitalTransactions = $digitalQuery->latest()->paginate(10, ['*'], 'digitalPage');
 
         // 🛠️ DYNAMIC BACKTRACKING MODIFICATION START
@@ -997,6 +1040,7 @@ class PosCheckout extends Component
         }
 
         // 2. Query cumulative sums from day one up until that historical boundary timestamp
+        // (Keep these unfiltered by service type so your absolute running ledger stays mathematically correct)
         $runningCashOnHand = \App\Models\DigitalTransaction::where('is_active', true)
             ->where('logged_at', '<=', $endOfPeriod)
             ->sum('cash_on_hand_change');
@@ -1006,15 +1050,15 @@ class PosCheckout extends Component
             ->sum('gcash_balance_change');
         // 🛠️ DYNAMIC BACKTRACKING MODIFICATION END
 
-        // 2. Calculate filtered shifts based on active records inside the selected day/month scope
+        // 3. Calculate filtered shifts based on active records inside the selected filters scope
         $totalCashMovement = (clone $digitalQuery)->sum('cash_on_hand_change');
         $totalGCashMovement = (clone $digitalQuery)->sum('gcash_balance_change');
         $totalFeesEarned = (clone $digitalQuery)->sum('service_fee');
 
-        // 3. New Volume Breakdown Sums (Scoped strictly to the active date filter)
+        // 4. Volume Breakdown Sums (Scoped strictly to the active date + service platform filters)
         $totalCashInVolume   = (clone $digitalQuery)->where('service_type', 'gcash_cash_in')->sum('amount');
-        $totalCashOutVolume = (clone $digitalQuery)->where('service_type', 'gcash_cash_out')->sum('amount');
-        $totalELoadVolume   = (clone $digitalQuery)->where('service_type', 'eload')->sum('amount');
+        $totalCashOutVolume  = (clone $digitalQuery)->where('service_type', 'gcash_cash_out')->sum('amount');
+        $totalELoadVolume    = (clone $digitalQuery)->where('service_type', 'eload')->sum('amount');
 
         return view('livewire.pos-checkout', [
             'riceManagementProducts'     => $riceManagementProducts,
@@ -1153,6 +1197,12 @@ class PosCheckout extends Component
      */
     public function saveProductRegistryEntry()
     {
+        // 🚀 FAST ENTRY FIX: If SKU is blank during creation, auto-generate a unique temporary barcode
+        if (!$this->is_edit_mode && empty(trim($this->new_sku))) {
+            // Generates a clean, unique identifier like: TEMP-1719782400 or TEMP64C2B9
+            $this->new_sku = 'TEMP-' . time() . '-' . rand(10, 99);
+        }
+
         // 1. AUTO-CALCULATION
         if ($this->new_cost_per_box > 0 && $this->new_items_per_box > 0) {
             $this->new_cost = (float)$this->new_cost_per_box / (float)$this->new_items_per_box;
@@ -1166,7 +1216,8 @@ class PosCheckout extends Component
         $hasWholesalePrice = !empty($this->new_wholesale_price) && $this->new_wholesale_price > 0;
 
         $this->validate([
-            'new_sku' => 'required|string',
+            // 💡 VALIDATION UPDATE: Allow nullable so users can completely skip it on the frontend
+            'new_sku' => 'required|string|unique:products,sku,' . ($this->editing_product_id ?? 'NULL'),
             'new_name' => 'required|string|max:255',
             'new_category_id' => 'required|exists:categories,id',
             'new_cost' => 'required|numeric|min:0',
@@ -1179,7 +1230,7 @@ class PosCheckout extends Component
             'new_stock' => $isEdit ? 'nullable|numeric' : ($isRiceProduct ? 'required|numeric|min:0' : 'required|integer|min:0'),
             'new_threshold' => 'required|numeric|min:0',
             'new_delivery_date' => 'required|date',
-            'supplier_id' => 'nullable|exists:suppliers,id', // 🚀 Dynamic structural check
+            'supplier_id' => 'nullable|exists:suppliers,id', 
         ]);
 
         DB::transaction(function () use ($isEdit, $hasWholesalePrice) {
@@ -1198,8 +1249,9 @@ class PosCheckout extends Component
                 $quantityAdded = (float)($this->new_stock_to_add ?? 0);
                 $newCalculatedStock = $oldStock + $quantityAdded;
 
-                // 1. Update the Main Product Entry
+                // 1. Update the Main Product Entry (Added 'sku' tracking)
                 $mainProduct->update([
+                    'sku'                 => $this->new_sku, // 👈 ALLOW SKU UPDATES
                     'name'                => $this->new_name,
                     'category_id'         => $this->new_category_id,
                     'cost_price'          => (float)$this->new_cost,
@@ -1303,9 +1355,8 @@ class PosCheckout extends Component
 
             // --- RETAIL VARIANT LOGIC (Auto-updates descriptive strings) ---
             if ($this->create_retail_variant && $mainProduct) {
-                $retailProduct = Product::where('parent_id', $mainProduct->id)
-                    ->orWhere('sku', 'KILO-' . $mainProduct->sku)
-                    ->first();
+                // 💡 Lookup primarily via parent_id to prevent duplicate creation when changing SKUs
+                $retailProduct = Product::where('parent_id', $mainProduct->id)->first();
 
                 if (!$retailProduct) {
                     $retailProduct = new Product();
@@ -1316,8 +1367,8 @@ class PosCheckout extends Component
 
                 $retailProduct->fill([
                     'category_id'       => $mainProduct->category_id,
-                    'name'              => $mainProduct->name . ' (Retail/Kilo)', // Follows parent update pattern
-                    'sku'               => 'KILO-' . $mainProduct->sku,
+                    'name'              => $mainProduct->name . ' (Retail/Kilo)', 
+                    'sku'               => 'KILO-' . $mainProduct->sku, // 👈 Dynamically inherits the updated barcode
                     'is_weighed'        => true,
                     'conversion_factor' => 50,
                     'cost_price'        => (float)$mainProduct->cost_price / 50,
@@ -1350,6 +1401,12 @@ class PosCheckout extends Component
         // 1. Clean up incoming scanned string values
         $skuValue = trim($value);
         
+        // 💡 FIX 1: If we are ALREADY in edit mode, do NOT search for another product.
+        // This allows the user to overwrite a "TEMP-xxxx" barcode with a real one safely.
+        if ($this->is_edit_mode && !empty($this->editing_product_id)) {
+            return;
+        }
+
         if (empty($skuValue)) {
             if (method_exists($this, 'resetEditFormState')) {
                 $this->resetEditFormState();
@@ -1392,10 +1449,10 @@ class PosCheckout extends Component
                 $this->num_boxes          = null;
             }
 
-            $retailVariant = \App\Models\Product::where(function ($query) use ($product) {
-                $query->where('parent_id', $product->id)
-                    ->orWhere('sku', 'KILO-' . $product->sku);
-            })->first();
+            // 💡 FIX 2: Check for retail variants via parent_id primarily to adapt to dynamic SKU modifications safely
+            $retailVariant = \App\Models\Product::where('parent_id', $product->id)
+                ->orWhere('sku', 'KILO-' . $product->sku)
+                ->first();
 
             if ($retailVariant) {
                 $this->create_retail_variant = true;
@@ -1966,5 +2023,80 @@ class PosCheckout extends Component
             $product->update(['hide_from_alerts' => false]);
             $this->successMessage = "{$product->name} is now being tracked for low stock alerts again.";
         }
+    }
+
+    public function downloadDatabaseBackup(): StreamedResponse
+    {
+        // 1. Enforce that this system only runs against MySQL configurations
+        if (config('database.default') !== 'mysql') {
+            session()->flash('settings_error', 'System utility mismatch: Active driver is not MySQL.');
+            return redirect()->back();
+        }
+
+        $filename = 'backup-' . config('database.connections.mysql.database') . '-' . now()->format('Y-m-d-His') . '.sql';
+
+        // 2. Return a streamed response to handle heavy data transfers without hitting memory limits
+        return response()->streamDownload(function () {
+            $pdo = DB::connection()->getPdo();
+            
+            // Disable foreign key checks at the top of the SQL file for clean restoration later
+            echo "-- Yanrie Mini Mart - Automated Database System Backup\n";
+            echo "-- Generated: " . now()->toDateTimeString() . "\n";
+            echo "SET FOREIGN_KEY_CHECKS=0;\n\n";
+
+            // Fetch all tables present in the current database matching the configuration
+            $tables = [];
+            $query = $pdo->query('SHOW TABLES');
+            while ($row = $query->fetch(\PDO::FETCH_NUM)) {
+                $tables[] = $row[0];
+            }
+
+            foreach ($tables as $table) {
+                echo "-- ------------------------------------------------------\n";
+                echo "-- Table structure for table `{$table}`\n";
+                echo "-- ------------------------------------------------------\n";
+                echo "DROP TABLE IF EXISTS `{$table}`;\n";
+
+                // Fetch the exact layout schema blueprint for the table
+                $tableSchemaQuery = $pdo->query("SHOW CREATE TABLE `{$table}`");
+                $tableSchema = $tableSchemaQuery->fetch(\PDO::FETCH_ASSOC);
+                echo $tableSchema['Create Table'] . ";\n\n";
+
+                echo "-- Dumping data for table `{$table}`\n";
+                
+                // Stream the table data row-by-row
+                $dataQuery = $pdo->query("SELECT * FROM `{$table}`");
+                while ($row = $dataQuery->fetch(\PDO::FETCH_ASSOC)) {
+                    $keys = array_map(fn($key) => "`{$key}`", array_keys($row));
+                    $values = array_map(function($value) use ($pdo) {
+                        if (is_null($value)) return 'NULL';
+                        return $pdo->quote($value);
+                    }, array_values($row));
+
+                    echo "INSERT INTO `{$table}` (" . implode(', ', $keys) . ") VALUES (" . implode(', ', $values) . ");\n";
+                }
+                echo "\n\n";
+            }
+
+            // Re-enable validation constraints at the end of execution
+            echo "SET FOREIGN_KEY_CHECKS=1;\n";
+        }, $filename, [
+            'Content-Type' => 'application/sql',
+            'Content-Disposition' => "attachment; filename=\"{$filename}\"",
+        ]);
+    }
+
+    // Local scope to easily get active items: Product::active()->get()
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', 1);
+    }
+
+    public function archiveProduct($id)
+    {
+        $product = \App\Models\Product::findOrFail($id);
+        $product->update(['is_active' => 0]);
+
+        session()->flash('message', 'Product moved to archives successfully.');
     }
 }
