@@ -60,11 +60,13 @@ class Product extends Model
     
     public function batches()
     {
-        return $this->hasMany(ProductBatch::class)->latest();
+        // Filter out rows created by audit corrections (where num_boxes is null)
+        return $this->hasMany(ProductBatch::class)->whereNotNull('num_boxes');
     }
 
     public function stockAdjustments()
     {
-        return $this->hasMany(\App\Models\StockAdjustment::class, 'product_id');
+        // Separate relationship for audit logs if needed
+        return $this->hasMany(ProductBatch::class)->whereNull('num_boxes');
     }
 }

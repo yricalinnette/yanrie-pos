@@ -19,5 +19,7 @@ class DigitalTransaction extends Model
         'customer_phone',
         'is_active',
         'logged_at',
+        'withdrawal_period_type',
+        'withdrawal_period_target',
     ];
 }

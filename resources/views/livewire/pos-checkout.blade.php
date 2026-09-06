@@ -100,50 +100,78 @@
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4" wire:key="pos-products-grid-page-{{ request('productsPage', 1) }}">
                     @foreach($products as $product)
-                        @php $isLow = $product->stock_level <= $product->low_stock_threshold; @endphp
+                        @php 
+                            $isLow = $product->stock_level <= $product->low_stock_threshold;
+                            $hasWholesale = !empty($product->wholesale_price) && $product->wholesale_price > 0;
+                        @endphp
                         
                         <div 
                             wire:click="addToCart({{ $product->id }})" 
                             wire:key="product-card-id-{{ $product->id }}-stock-{{ $product->stock_level }}"
-                            class="p-5 border rounded-xl cursor-pointer transition-all duration-150 flex flex-col justify-between group min-h-[185px] relative
-                                {{ $product->stock_level <= 0 ? 'bg-gray-100 border-gray-300 opacity-60 pointer-events-none' : 'bg-white border-gray-200 hover:border-blue-500 hover:shadow-md hover:-translate-y-0.5' }}
-                                {{ $isLow && $product->stock_level > 0 ? 'ring-2 ring-amber-400 border-transparent bg-amber-50/30' : '' }}"
+                            class="p-4 border rounded-xl cursor-pointer transition-all duration-150 flex flex-col justify-between group min-h-[195px] relative
+                                {{ $product->stock_level <= 0 ? 'bg-slate-50 border-slate-200 opacity-60 pointer-events-none' : 'bg-white border-slate-200 hover:border-blue-500 hover:shadow-md' }}
+                                {{ $isLow && $product->stock_level > 0 ? 'ring-2 ring-amber-400 border-transparent bg-amber-50/20' : '' }}"
                         >
                             <div>
-                                <div class="flex justify-between items-start gap-2 mb-1.5">
-                                    <span class="text-xs font-bold uppercase tracking-wider text-gray-400 bg-gray-100 px-2.5 py-1 rounded-md">
+                                <!-- Category Tag & Stock Status -->
+                                <div class="flex justify-between items-center gap-2 mb-2">
+                                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 bg-slate-100 border border-slate-200/60 px-2 py-0.5 rounded-md">
                                         {{ $product->category->name ?? 'General' }}
                                     </span>
+
                                     @if($product->stock_level <= 0)
-                                        <span class="bg-red-500 text-white text-[10px] font-black uppercase px-2 py-0.5 rounded">SOLD OUT</span>
+                                        <span class="bg-red-500 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-wide">
+                                            SOLD OUT
+                                        </span>
                                     @elseif($isLow)
-                                        <span class="bg-amber-500 text-white text-[10px] font-black uppercase px-2 py-0.5 rounded">LOW STOCK</span>
+                                        <span class="bg-amber-500 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded tracking-wide">
+                                            LOW STOCK
+                                        </span>
                                     @endif
                                 </div>
                                 
-                                <h3 class="font-extrabold text-gray-900 text-lg group-hover:text-blue-600 transition-colors leading-snug">
+                                <!-- Product Name -->
+                                <h3 class="font-extrabold text-slate-800 text-base group-hover:text-blue-600 transition-colors leading-snug line-clamp-2">
                                     {{ $product->name }}
                                 </h3>
                                 
-                                <p class="text-[11px] font-mono font-bold tracking-wider text-slate-400 mt-1 flex flex-wrap items-center gap-2">
-                                    <span class="flex items-center gap-1">
-                                        <span>📦 Barcode:</span>
-                                        <span class="text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded font-black border border-blue-100">
+                                <!-- Barcode, Stock & Wholesale Information -->
+                                <div class="mt-2 space-y-1">
+                                    <div class="text-[11px] font-mono text-slate-500 flex items-center gap-1.5">
+                                        <span class="text-slate-400">Barcode:</span>
+                                        <span class="text-slate-700 bg-slate-100 font-bold px-1.5 py-0.5 rounded border border-slate-200/80">
                                             {{ $product->sku ? $product->sku : 'N/A' }}
                                         </span>
-                                    </span>
-                                </p>
-                                <p class="text-xs font-bold mt-1.5 {{ $product->stock_level <= 0 ? 'text-red-600' : 'text-gray-500' }}">
-                                    Available Stock: 
-                                    <span class="text-sm font-black">
-                                        {{ number_format($product->stock_level, (strtolower($product->category->name ?? '') === 'rice' || $product->is_weighed) ? 2 : 0) }}
-                                    </span>
-                                </p>
+                                    </div>
+
+                                    <p class="text-xs font-bold {{ $product->stock_level <= 0 ? 'text-red-600' : 'text-slate-500' }}">
+                                        Available Stock: 
+                                        <span class="text-sm font-black">
+                                            {{ number_format($product->stock_level, (strtolower($product->category->name ?? '') === 'rice' || $product->is_weighed) ? 2 : 0) }}
+                                        </span>
+                                    </p>
+
+                                    @if($hasWholesale)
+                                        <p class="text-xs font-bold text-blue-600">
+                                            Wholesale Price: 
+                                            <span class="text-sm font-black">
+                                                ₱{{ number_format($product->wholesale_price, 2) }}
+                                            </span>
+                                            @if(!empty($product->wholesale_qty))
+                                                <span class="text-[11px] font-semibold text-blue-500">({{ $product->wholesale_qty }}+ pcs)</span>
+                                            @endif
+                                        </p>
+                                    @endif
+                                </div>
                             </div>
 
-                            <div class="mt-4 pt-3 border-t border-gray-100 flex justify-between items-center">
-                                <span class="text-blue-600 font-black text-xl">₱{{ number_format($product->selling_price, 2) }}</span>
-                                <span class="text-xs font-bold text-gray-500 bg-gray-50 group-hover:bg-blue-600 group-hover:text-white px-3 py-1.5 rounded-lg border border-gray-200 group-hover:border-transparent transition-all">
+                            <!-- Card Footer: Retail Price & Add Action -->
+                            <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                                <span class="text-blue-600 font-black text-xl leading-tight">
+                                    ₱{{ number_format($product->selling_price, 2) }}
+                                </span>
+
+                                <span class="text-xs font-bold text-slate-600 bg-slate-100 group-hover:bg-blue-600 group-hover:text-white px-3 py-2 rounded-lg border border-slate-200 group-hover:border-transparent transition-all whitespace-nowrap">
                                     + Add to Cart
                                 </span>
                             </div>
@@ -151,7 +179,7 @@
                     @endforeach
                 </div>
 
-                <div class="mt-6 pt-4 border-t border-gray-100" wire:key="pos-pagination-navigation-links">
+                <div class="mt-6 pt-4 border-t border-slate-200/60" wire:key="pos-pagination-navigation-links">
                     {{ $products->links(data: ['pageName' => 'productsPage']) }}
                 </div>
 
@@ -175,7 +203,7 @@
                                 $stepSize = $isWeighedItem ? 0.5 : 1.0;
                             @endphp
 
-                            <div class="bg-slate-800/50 p-3 rounded-xl border border-slate-800 flex flex-col gap-2" wire:key="cart-item-{{ $item['id'] }}">
+                            <div class="bg-slate-800/50 p-3 rounded-xl border border-slate-800 flex flex-col gap-2" wire:key="cart-item-{{ $item['id'] }}-{{ $item['price_mode'] }}">
                                 
                                 <div class="flex justify-between items-start">
                                     <div class="flex-1 pr-2">
@@ -223,7 +251,7 @@
                                         <div class="flex items-center bg-slate-900 rounded-lg border border-slate-700 p-0.5">
                                             <button 
                                                 type="button"
-                                                wire:click="updateQuantity({{ $item['id'] }}, {{ (float)$item['qty'] - $stepSize }})"
+                                                wire:click="updateQuantity({{ $index }}, {{ (float)$item['qty'] - $stepSize }})"
                                                 class="px-2.5 py-1 text-slate-400 hover:text-white font-bold transition-colors focus:outline-none"
                                             >
                                                 —
@@ -234,13 +262,13 @@
                                                 step="{{ $isWeighedItem ? 'any' : '1' }}"
                                                 min="0.01"
                                                 value="{{ $isWeighedItem ? number_format($item['qty'], 2, '.', '') : number_format($item['qty'], 0) }}" 
-                                                wire:change="updateQuantity({{ $item['id'] }}, $event.target.value)"
+                                                wire:change="updateQuantity({{ $index }}, $event.target.value)"
                                                 class="w-16 bg-transparent text-center font-black font-mono text-sm text-white focus:outline-none"
                                             />
                                             
                                             <button 
                                                 type="button"
-                                                wire:click="updateQuantity({{ $item['id'] }}, {{ (float)$item['qty'] + $stepSize }})"
+                                                wire:click="updateQuantity({{ $index }}, {{ (float)$item['qty'] + $stepSize }})"
                                                 class="px-2.5 py-1 text-slate-400 hover:text-white font-bold transition-colors focus:outline-none"
                                             >
                                                 +
@@ -249,7 +277,7 @@
                                         
                                         <button 
                                             type="button"
-                                            wire:click="removeFromCart({{ $item['id'] }})" 
+                                            wire:click="removeFromCart({{ $index }})" 
                                             class="text-xs font-bold text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1 p-1"
                                             title="Remove Item"
                                         >
@@ -1310,7 +1338,7 @@
                                 <div class="block-item">
                                     <p class="font-black text-sm uppercase tracking-tight text-gray-950 item-title">{{ $itemName }}</p>
                                     <div class="data-row flex justify-between items-end text-sm text-gray-700 mt-0.5 pl-1 w-full">
-                                        <span class="qty-calc-col whitespace-nowrap">{{ $formattedQty }}{{ $unit }}×₱{{ number_format($dbItem->unit_price, 2) }}</span>
+                                        <span class="qty-calc-col whitespace-nowrap">{{ $formattedQty }} {{ $unit }} P{{ number_format($dbItem->unit_price, 2) }}</span>
                                         <span class="total-price-col font-black text-gray-950 whitespace-nowrap pr-2">₱{{ number_format($dbItem->subtotal, 2) }}</span>
                                     </div>
                                 </div>
@@ -1352,19 +1380,26 @@
                 <div class="mt-4 grid grid-cols-2 gap-2 text-xs pt-3 border-t border-gray-100 shrink-0">
                     <button 
                         @click="
-                            let content = document.getElementById('printable-receipt-area').innerHTML;
-                            
+                            let receiptNode = document.getElementById('printable-receipt-area').cloneNode(true);
+                            let content = receiptNode.innerHTML;
+
+                            // 1. Replace Peso sign (₱) with 'P' to prevent printer code page corruption
+                            content = content.replace(/₱/g, 'P');
+
+                            // 2. Remove emojis or non-ASCII characters that trigger Asian character fallbacks
+                            content = content.replace(/[^\x00-\x7F]/g, '');
+
                             let htmlDoc = `<!DOCTYPE html>
-                            <html>
+                            <html lang='en'>
                             <head>
                                 <meta charset='utf-8'>
                                 <meta http-equiv='Content-Type' content='text/html; charset=utf-8'>
                                 <title>POS Print</title>
                                 <style>
                                     * { box-sizing: border-box; margin: 0; padding: 0; font-weight: 900 !important; }
-                                    @page { margin: 0; size: 58mm auto; }
+                                    @page { margin: 0 !important; size: 58mm auto; }
                                     html, body { background: #ffffff !important; color: #000000; width: 100%; max-width: 42mm; }
-                                    body { margin: 0; padding: 6px 0px 6px 2px; font-family: 'Courier New', Courier, monospace, system-ui; font-size: 11px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
+                                    body { margin: 0; padding: 6px 0px 6px 2px; font-family: 'Courier New', Courier, monospace; font-size: 11px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
                                     .text-center { text-align: center; } 
                                     .uppercase { text-transform: uppercase; } 
                                     .mt-0.5 { margin-top: 2px; } 
@@ -1429,16 +1464,16 @@
                             <body>` + content + `</body>
                             </html>`;
 
-                            let blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8' });
-                            let blobUrl = URL.createObjectURL(blob);
-
-                            let w = window.open(blobUrl, '_blank', 'width=360,height=700');
+                            // 3. Open directly with document stream to avoid Blob UTF-8 Byte-Order-Mark (BOM) insertions
+                            let w = window.open('', '_blank', 'width=360,height=700');
                             if (w) {
+                                w.document.open();
+                                w.document.write(htmlDoc);
+                                w.document.close();
                                 w.focus();
                                 setTimeout(() => { 
                                     w.print(); 
                                     w.close();
-                                    URL.revokeObjectURL(blobUrl);
                                 }, 250);
                             }
                             $wire.closeReceipt();
@@ -1564,29 +1599,280 @@
             </div>
 
             <div class="border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                <nav class="flex gap-2" aria-label="Tabs">
+                <nav class="flex gap-2 overflow-x-auto" aria-label="Tabs">
                     <button type="button"
                         wire:click="$set('reports_sub_tab', 'retail_rice')"
-                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2
+                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2 whitespace-nowrap
                         {{ $reports_sub_tab === 'retail_rice' ? 'border-blue-600 bg-blue-50 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }}">
                         🌾 Retail Rice (Kilo)
                     </button>
 
                     <button type="button"
                         wire:click="$set('reports_sub_tab', 'whole_rice')"
-                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2
+                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2 whitespace-nowrap
                         {{ $reports_sub_tab === 'whole_rice' ? 'border-amber-600 bg-amber-50 text-amber-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }}">
                         📦 Whole Rice Sacks
                     </button>
 
                     <button type="button"
                         wire:click="$set('reports_sub_tab', 'other_products')"
-                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2
+                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2 whitespace-nowrap
                         {{ $reports_sub_tab === 'other_products' ? 'border-purple-600 bg-purple-50 text-purple-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }}">
                         🏪 Other Grocery Products
                     </button>
+
+                    <button type="button"
+                        wire:click="$set('reports_sub_tab', 'cash_audit')"
+                        class="px-5 py-3 font-black text-xs uppercase tracking-wider border-b-2 rounded-t-xl transition-all flex items-center gap-2 whitespace-nowrap
+                        {{ $reports_sub_tab === 'cash_audit' ? 'border-emerald-600 bg-emerald-50 text-emerald-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }}">
+                        💵 Cash Reconciliation & Audit
+                    </button>
                 </nav>
             </div>
+
+            @if($reports_sub_tab === 'cash_audit')
+                <div class="space-y-6 animate-in fade-in duration-200 mt-4">
+
+                    {{-- Flash Alert Notification --}}
+                    @if (session()->has('message'))
+                        <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 font-bold text-xs flex items-center justify-between">
+                            <span>{{ session('message') }}</span>
+                            <span class="text-xs text-emerald-500 font-mono">Saved</span>
+                        </div>
+                    @endif
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        
+                        {{-- Left Panel: Audit Inputs & Cash Adjustments --}}
+                        <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-gray-200 space-y-6">
+                            
+                            {{-- Category Inclusions --}}
+                            <div class="space-y-3">
+                                <h3 class="text-xs font-black text-gray-900 uppercase tracking-wider border-b pb-2 flex items-center gap-2">
+                                    ⚙️ Sales Sources to Include
+                                </h3>
+
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <label class="flex items-center p-3 rounded-xl border border-gray-200 hover:bg-slate-50 cursor-pointer transition-all">
+                                        <input type="checkbox" wire:model.live="include_retail_rice" class="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 border-gray-300">
+                                        <span class="ml-2.5 text-xs font-bold text-gray-700 uppercase">🌾 Retail Rice</span>
+                                    </label>
+
+                                    <label class="flex items-center p-3 rounded-xl border border-gray-200 hover:bg-slate-50 cursor-pointer transition-all">
+                                        <input type="checkbox" wire:model.live="include_wholesale_rice" class="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 border-gray-300">
+                                        <span class="ml-2.5 text-xs font-bold text-gray-700 uppercase">📦 Wholesale Rice</span>
+                                    </label>
+
+                                    <label class="flex items-center p-3 rounded-xl border border-gray-200 hover:bg-slate-50 cursor-pointer transition-all">
+                                        <input type="checkbox" wire:model.live="include_other_grocery" class="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 border-gray-300">
+                                        <span class="ml-2.5 text-xs font-bold text-gray-700 uppercase">🏪 System Grocery</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            {{-- Cash Drawer Inputs Grid --}}
+                            <div class="pt-4 border-t border-gray-100 space-y-4">
+                                <h3 class="text-xs font-black text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                    📥 Drawer & Expense Accounting
+                                </h3>
+                                
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Beginning Cash / Float (₱)</label>
+                                        <input type="number" step="0.01" wire:model.live.debounce.300ms="beginning_cash" placeholder="0.00" class="w-full px-4 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-sm font-bold text-gray-800 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none">
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Payouts / Expenses (₱)</label>
+                                        <input type="number" step="0.01" wire:model.live.debounce.300ms="payout_expenses" placeholder="0.00" class="w-full px-4 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-sm font-bold text-rose-600 focus:bg-white focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            {{-- Sales Adjustments & Physical Count Inputs --}}
+                            <div class="pt-4 border-t border-gray-100 space-y-4">
+                                <h3 class="text-xs font-black text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                    ✍️ Manual Grocery Sales & Physical Cash Count
+                                </h3>
+
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Unencoded / Manual Grocery (₱)</label>
+                                        <input type="number" step="0.01" wire:model.live.debounce.300ms="manual_grocery_sales" placeholder="0.00" class="w-full px-4 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-sm font-bold text-gray-800 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none">
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Actual Physical Cash Count (₱)</label>
+                                        <input type="number" step="0.01" wire:model.live.debounce.300ms="actual_cash_on_hand" placeholder="0.00" class="w-full px-4 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-sm font-bold text-blue-600 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            {{-- Action Trigger --}}
+                            <div class="pt-4 border-t border-gray-100 flex justify-end">
+                                <button type="button" wire:click="saveDailyCashReport" class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-emerald-600/20 flex items-center gap-2">
+                                    💾 Save Daily Cash Reconciliation
+                                </button>
+                            </div>
+
+                        </div>
+
+                        {{-- Right Panel: Computed Audit & Reconciliation Summary --}}
+                        <div class="bg-slate-900 text-white p-6 rounded-2xl shadow-md flex flex-col justify-between space-y-6 border border-slate-800">
+                            <div class="space-y-4">
+                                <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                                    <h3 class="text-xs font-black uppercase tracking-wider text-emerald-400">
+                                        📊 Live Reconciliation Summary
+                                    </h3>
+                                    @if($savedReport)
+                                        <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 uppercase border border-emerald-500/30">
+                                            Recorded
+                                        </span>
+                                    @endif
+                                </div>
+
+                                <div class="space-y-2 text-xs">
+                                    <div class="flex justify-between text-slate-400">
+                                        <span>Retail Rice:</span>
+                                        <span class="font-mono font-bold text-white">₱{{ number_format($include_retail_rice ? $retailRiceTotal : 0, 2) }}</span>
+                                    </div>
+                                    <div class="flex justify-between text-slate-400">
+                                        <span>Wholesale Rice:</span>
+                                        <span class="font-mono font-bold text-white">₱{{ number_format($include_wholesale_rice ? $wholesaleRiceTotal : 0, 2) }}</span>
+                                    </div>
+                                    <div class="flex justify-between text-slate-400">
+                                        <span>System Grocery:</span>
+                                        <span class="font-mono font-bold text-white">₱{{ number_format($include_other_grocery ? $systemGroceryTotal : 0, 2) }}</span>
+                                    </div>
+                                    <div class="flex justify-between text-slate-400">
+                                        <span>Manual Grocery Sales:</span>
+                                        <span class="font-mono font-bold text-white">₱{{ number_format((float)$manual_grocery_sales, 2) }}</span>
+                                    </div>
+
+                                    {{-- Total Pure Sales Revenue --}}
+                                    <div class="pt-2 border-t border-slate-800 flex justify-between text-xs font-bold text-emerald-400">
+                                        <span>TOTAL EXPECTED SALES:</span>
+                                        <span class="font-mono">₱{{ number_format($computedTotalExpectedSales, 2) }}</span>
+                                    </div>
+
+                                    <div class="pt-2 border-t border-slate-800 flex justify-between text-slate-400">
+                                        <span>Actual Cash Counted:</span>
+                                        <span class="font-mono font-bold text-blue-300">₱{{ number_format((float)$actual_cash_on_hand, 2) }}</span>
+                                    </div>
+                                    <div class="flex justify-between text-slate-400">
+                                        <span>(-) Beginning Cash Float:</span>
+                                        <span class="font-mono font-bold text-slate-300">₱{{ number_format((float)$beginning_cash, 2) }}</span>
+                                    </div>
+                                    <div class="flex justify-between text-slate-400">
+                                        <span>(+) Payouts / Expenses:</span>
+                                        <span class="font-mono font-bold text-rose-400">₱{{ number_format((float)$payout_expenses, 2) }}</span>
+                                    </div>
+
+                                    {{-- Net Actual Sales Revenue collected from drawer --}}
+                                    <div class="pt-3 border-t border-slate-800 flex justify-between text-sm font-black text-amber-300">
+                                        <span>ACTUAL NET SALES CASH:</span>
+                                        <span class="font-mono">₱{{ number_format($actualNetSalesGenerated, 2) }}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {{-- Calculated Variance Output --}}
+                            <div class="p-4 rounded-xl border {{ $cashVariance >= 0 ? 'bg-emerald-950/60 border-emerald-500/30 text-emerald-400' : 'bg-rose-950/60 border-rose-500/30 text-rose-400' }}">
+                                <p class="text-[10px] font-black uppercase tracking-wider">Sales Revenue Variance</p>
+                                <div class="flex items-center justify-between mt-1">
+                                    <span class="text-xl font-black font-mono">
+                                        {{ $cashVariance >= 0 ? '+' : '' }}₱{{ number_format($cashVariance, 2) }}
+                                    </span>
+                                    <span class="text-xs px-2 py-0.5 rounded uppercase font-bold tracking-wider {{ $cashVariance >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300' }}">
+                                        {{ $cashVariance > 0 ? 'Overage' : ($cashVariance < 0 ? 'Shortage' : 'Balanced') }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    {{-- Saved Reconciliation History Table --}}
+                    <div class="mt-8 bg-white p-6 rounded-2xl shadow-sm border border-gray-200 space-y-4">
+                        <div class="flex items-center justify-between border-b pb-3">
+                            <h3 class="text-xs font-black text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                📜 Saved Reconciliation History
+                            </h3>
+                            <span class="text-xs font-bold text-gray-500">
+                                Total Records: {{ $historicalCashReports->total() }}
+                            </span>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead>
+                                    <tr class="border-b border-gray-100 text-[10px] font-black uppercase text-gray-400 tracking-wider">
+                                        <th class="p-3">Date</th>
+                                        <th class="p-3">Beginning (₱)</th>
+                                        <th class="p-3">Expenses (₱)</th>
+                                        <th class="p-3">Manual Sales (₱)</th>
+                                        <th class="p-3">Expected Sales (₱)</th>
+                                        <th class="p-3">Actual Cash (₱)</th>
+                                        <th class="p-3">Variance</th>
+                                        <th class="p-3 text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-100 text-xs font-medium text-gray-700">
+                                    @forelse($historicalCashReports as $report)
+                                        @php
+                                            // Net Sales generated from drawer cash = (Actual Cash - Float) + Expenses
+                                            $netSalesCash = ($report->actual_cash_counted - $report->beginning_cash) + $report->payout_expenses;
+                                            $variance = $netSalesCash - $report->total_expected_sales;
+                                        @endphp
+                                        <tr class="hover:bg-slate-50/80 transition-colors">
+                                            <td class="p-3 font-bold text-gray-900">{{ $report->report_date }}</td>
+                                            <td class="p-3 font-mono">₱{{ number_format($report->beginning_cash, 2) }}</td>
+                                            <td class="p-3 font-mono text-rose-600">₱{{ number_format($report->payout_expenses, 2) }}</td>
+                                            <td class="p-3 font-mono">₱{{ number_format($report->manual_grocery_sales, 2) }}</td>
+                                            <td class="p-3 font-mono font-bold text-emerald-600">₱{{ number_format($report->total_expected_sales, 2) }}</td>
+                                            <td class="p-3 font-mono font-bold text-blue-600">₱{{ number_format($report->actual_cash_counted, 2) }}</td>
+                                            <td class="p-3 font-mono font-bold">
+                                                <span class="px-2 py-0.5 rounded text-[10px] {{ $variance >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800' }}">
+                                                    {{ $variance >= 0 ? '+' : '' }}₱{{ number_format($variance, 2) }}
+                                                </span>
+                                            </td>
+                                            <td class="p-3 text-right space-x-2">
+                                                {{-- Edit Trigger --}}
+                                                <button 
+                                                    type="button" 
+                                                    wire:click="editDailyCashReport({{ $report->id }})"
+                                                    class="px-3 py-1 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white font-bold text-[10px] uppercase rounded-lg transition-all shadow-sm">
+                                                    ✏️ Edit
+                                                </button>
+
+                                                {{-- Delete Trigger --}}
+                                                <button 
+                                                    type="button" 
+                                                    wire:click="deleteDailyCashReport({{ $report->id }})"
+                                                    wire:confirm="Are you sure you want to delete the cash reconciliation record for {{ $report->report_date }}?"
+                                                    class="px-3 py-1 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-bold text-[10px] uppercase rounded-lg transition-all shadow-sm">
+                                                    🗑️ Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr>
+                                            <td colspan="8" class="p-6 text-center text-gray-400 font-bold uppercase text-xs">
+                                                No saved reconciliation reports found.
+                                            </td>
+                                        </tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {{-- Pagination Links --}}
+                        <div class="pt-3 border-t border-gray-100">
+                            {{ $historicalCashReports->links() }}
+                        </div>
+                    </div>
+                </div>
+            @endif
             
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div class="bg-white p-5 border border-gray-200 rounded-2xl shadow-sm flex items-center gap-4">
@@ -2339,7 +2625,7 @@
                     @endif
 
                     <button type="button" wire:click="$toggle('show_capital_form')" class="text-xs bg-slate-900 hover:bg-slate-800 text-white font-bold px-4 py-2.5 rounded-xl transition-all uppercase tracking-wider shadow-sm ml-auto md:ml-0">
-                        {{ $show_capital_form ? '🙈 Close Tool' : '➕ Add/Replenish Funds' }}
+                        {{ $show_capital_form ? '🙈 Close Tool' : '➕ Add/Replenish Funds/Withdraw Funds' }}
                     </button>
                 </div>
             </div>
@@ -2374,6 +2660,69 @@
                         <div>
                             <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-2.5 rounded-xl transition-all uppercase tracking-wide text-xs shadow-sm">
                                 Save Log Entry
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- 💸 WITHDRAW FEES / PROFIT FORM -->
+                <div class="bg-emerald-50/50 p-5 rounded-2xl border border-emerald-200">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="text-xs font-black uppercase text-emerald-900 tracking-wider">💸 Withdraw Collected Fees / Profits</h4>
+                        <span class="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                            Targeting: {{ $withdraw_period_type === 'daily' ? \Carbon\Carbon::parse($withdraw_target_date)->format('M d, Y') : \Carbon\Carbon::parse($withdraw_target_month . '-01')->format('F Y') }}
+                        </span>
+                    </div>
+                    
+                    @if (session()->has('fee_withdraw_success'))
+                        <div class="p-3 mb-3 text-xs text-emerald-800 bg-emerald-100 rounded-xl border border-emerald-300 font-medium">
+                            {{ session('fee_withdraw_success') }}
+                        </div>
+                    @endif
+
+                    <form wire:submit.prevent="withdrawCollectedFees" class="space-y-3">
+                        <!-- Scope Selection -->
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                                <label class="text-[10px] font-black uppercase text-gray-500 block mb-1">Fee Period Scope</label>
+                                <select wire:model.live="withdraw_period_type" class="w-full p-2.5 bg-white border border-gray-300 rounded-xl text-xs font-bold text-gray-800 focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <option value="monthly">🗓️ Monthly Accumulated Fees</option>
+                                    <option value="daily">📅 Daily Accumulated Fees</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="text-[10px] font-black uppercase text-gray-500 block mb-1">Target Period</label>
+                                @if($withdraw_period_type === 'monthly')
+                                    <input type="month" wire:model.live="withdraw_target_month" class="w-full p-2.5 bg-white border border-gray-300 rounded-xl text-xs font-bold text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500" required />
+                                @else
+                                    <input type="date" wire:model.live="withdraw_target_date" class="w-full p-2.5 bg-white border border-gray-300 rounded-xl text-xs font-bold text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500" required />
+                                @endif
+                            </div>
+
+                            <div>
+                                <label class="text-[10px] font-black uppercase text-gray-500 block mb-1">Withdraw From</label>
+                                <select wire:model="withdraw_source" class="w-full p-2.5 bg-white border border-gray-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <option value="cash_drawer">💵 Cash Drawer (Physical Cash)</option>
+                                    <option value="gcash_wallet">📱 GCash Wallet (Digital Balance)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Transaction Inputs -->
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                            <div>
+                                <label class="text-[10px] font-black uppercase text-gray-500 block mb-1">Withdrawal Action Date</label>
+                                <input type="date" wire:model="digital_date" class="w-full p-2.5 bg-white border border-gray-300 rounded-xl text-xs font-bold text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500" required />
+                            </div>
+
+                            <div>
+                                <label class="text-[10px] font-black uppercase text-gray-500 block mb-1">Amount to Payout (₱)</label>
+                                <input type="number" step="any" wire:model="fee_withdraw_amount" class="w-full p-2.5 bg-white border border-gray-300 rounded-xl text-xs font-mono font-bold text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="₱0.00" required />
+                            </div>
+
+                            <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold p-2.5 rounded-xl transition-all uppercase tracking-wide text-xs shadow-sm">
+                                Record Payout
                             </button>
                         </div>
                     </form>
@@ -2417,16 +2766,35 @@
                 </div>
 
                 <!-- Card 3: Earnings Scope -->
-                <div class="bg-slate-900 p-5 rounded-2xl text-white shadow-sm">
-                    <p class="text-xs uppercase font-bold text-slate-400 tracking-wider">✨ Total Fees Collected</p>
-                    <p class="text-2xl font-black mt-1 text-cyan-400 font-mono tracking-tight">
-                        ₱{{ number_format($totalFeesEarned, 2) }}
-                    </p>
-                    <span class="text-[10px] text-slate-400 block mt-1">
-                        Calculated for: <span class="font-bold underline text-white">
-                            {{ $filter_type === 'daily' ? 'Date '. \Carbon\Carbon::parse($filter_date)->format('M d, Y') : 'Month '. \Carbon\Carbon::parse($filter_month.'-01')->format('F Y') }}
-                        </span>
-                    </span>
+                <div class="bg-slate-900 p-5 rounded-2xl text-white shadow-sm flex flex-col justify-between border border-slate-800">
+                    <div>
+                        <div class="flex items-center justify-between">
+                            <p class="text-xs uppercase font-bold text-slate-400 tracking-wider">✨ Total Fees Collected</p>
+                            <span class="text-[10px] font-bold text-slate-400 bg-slate-800 px-2 py-0.5 rounded-full border border-slate-700">
+                                {{ $filter_type === 'daily' ? \Carbon\Carbon::parse($filter_date)->format('M d, Y') : \Carbon\Carbon::parse($filter_month.'-01')->format('F Y') }}
+                            </span>
+                        </div>
+
+                        <!-- Net Amount Highlight -->
+                        <p class="text-2xl font-black mt-2 text-cyan-400 font-mono tracking-tight">
+                            ₱{{ number_format(max(0, $totalFeesEarned - $totalFeesWithdrawn), 2) }}
+                        </p>
+                    </div>
+
+                    <!-- Audit Breakdown Bar -->
+                    <div class="mt-4 pt-3 border-t border-slate-800/80 space-y-1.5 text-xs font-mono">
+                        <div class="flex justify-between items-center text-slate-400">
+                            <span class="text-[11px] font-sans">Gross Fees Collected:</span>
+                            <span class="text-slate-200">₱{{ number_format($totalFeesEarned, 2) }}</span>
+                        </div>
+
+                        <div class="flex justify-between items-center text-slate-400">
+                            <span class="text-[11px] font-sans">Total Withdrawn:</span>
+                            <span class="{{ $totalFeesWithdrawn > 0 ? 'text-rose-400 font-bold' : 'text-slate-500' }}">
+                                -₱{{ number_format($totalFeesWithdrawn, 2) }}
+                            </span>
+                        </div>
+                    </div>
                 </div>
             </div>
 

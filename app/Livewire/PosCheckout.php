@@ -10,6 +10,7 @@ use App\Models\Sale;
 use App\Models\Category;
 use App\Models\ProductPriceHistory;
 use App\Models\StockAdjustment;
+use App\Models\DigitalTransaction;
 use App\Services\PosService;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -124,6 +125,11 @@ class PosCheckout extends Component
     public $filter_type = 'daily';   // 'daily' or 'monthly'
     public $filter_date;             // Holds YYYY-MM-DD for daily scopes
     public $filter_month;            // Holds YYYY-MM for monthly scopes
+    public $withdraw_source = 'cash_drawer';
+    public $fee_withdraw_amount = 0;
+    public $withdraw_period_type = 'monthly'; // 'daily' or 'monthly'
+    public $withdraw_target_date;            // e.g. "2026-07-15"
+    public $withdraw_target_month;           // e.g. "2026-07"
 
     public $viewHiddenAlerts = false;
     public $other_product_category = 'all';
@@ -132,6 +138,18 @@ class PosCheckout extends Component
     public $sackQuantities = [];
     public $backdatedSackDate = [];
     public $filter_service = '';
+
+    public $beginning_cash = 0.00;
+    public $payout_expenses = 0.00;
+    public $manual_grocery_sales = 0.00;
+    public $actual_cash_on_hand = 0.00;
+
+    public $retailRiceTotal = 0.00;
+    public $wholesaleRiceTotal = 0.00;
+    public $systemGroceryTotal = 0.00;
+    public bool $include_retail_rice = true;
+    public bool $include_wholesale_rice = true;
+    public bool $include_other_grocery = true;
 
     public function togglePriceMode()
     {
@@ -268,6 +286,13 @@ class PosCheckout extends Component
         $this->digital_date = now()->format('Y-m-d');
         $this->filter_date  = now()->format('Y-m-d');
         $this->filter_month = now()->format('Y-m');
+
+        $this->withdraw_target_date = now()->format('Y-m-d');
+        $this->withdraw_target_month = now()->format('Y-m');
+        $this->digital_date = now()->format('Y-m-d');
+
+        // Initial suggestion calculation
+        $this->calculateWithdrawalSuggestedAmount();
     }
 
     // Ensure you reset/handle logic when filter changes
@@ -410,8 +435,7 @@ class PosCheckout extends Component
         session()->flash('message', "Successfully split {$sacksToConvert} sack(s) of {$wholesaleProduct->name}! Injected +{$totalKilosToAdd}kg into loose retail stock bins.");
     }
 
-    // this is for manually adding of items to the cart
-    public function addToCart($productId, $qty = 1)
+    public function addToCart($productId, $qty = 1, $priceMode = 'retail')
     {
         if (!is_array($this->cart)) {
             $this->cart = [];
@@ -420,39 +444,63 @@ class PosCheckout extends Component
         $product = Product::find($productId);
         if (!$product) return;
 
-        $existingIndex = collect($this->cart)->search(function ($item) use ($productId) {
-            return $item['id'] === $productId;
+        // Check if item already exists with the same price mode
+        $existingIndex = collect($this->cart)->search(function ($item) use ($productId, $priceMode) {
+            return $item['id'] === $productId && $item['price_mode'] === $priceMode;
         });
 
         if ($existingIndex !== false) {
-            $this->cart[$existingIndex]['qty'] += $qty;
+            // Extract existing item, increment quantity, and remove old position
+            $existingItem = $this->cart[$existingIndex];
+            $existingItem['qty'] += $qty;
             
-            // 💡 UX safety feature: If they switch to wholesale later but increase quantity here,
-            // it retains whatever price mode they had toggled.
+            unset($this->cart[$existingIndex]);
+            $this->cart = array_values($this->cart);
+
+            // Prepend updated item to the top of the cart
+            array_unshift($this->cart, $existingItem);
         } else {
-            $this->cart[] = [
+            $initialPrice = (float)$product->selling_price;
+            if ($priceMode === 'wholesale' && !empty($product->wholesale_price)) {
+                $initialPrice = (float)$product->wholesale_price;
+            }
+
+            $newItem = [
                 'id' => $product->id,
                 'name' => $product->name,
                 'sku' => $product->sku,
                 'qty' => $qty,
                 'is_weighed' => $product->is_weighed,
-                
-                // 🌟 Keep current tracking architecture but save baselines
                 'retail_price' => (float)$product->selling_price,
                 'wholesale_price' => $product->wholesale_price ? (float)$product->wholesale_price : null,
                 'wholesale_qty' => $product->wholesale_qty ? (int)$product->wholesale_qty : null,
-                
-                // 🌟 Defaults
-                'price_mode' => 'retail',
-                'price' => (float)$product->selling_price,
+                'price_mode' => $priceMode,
+                'price' => $initialPrice,
             ];
+
+            // Prepend new item to the top of the cart
+            array_unshift($this->cart, $newItem);
         }
     }
 
     public function toggleItemPriceMode($index, $mode)
     {
-        if (isset($this->cart[$index])) {
-            // Update price_mode metadata key for this specific line index entry only
+        if (!isset($this->cart[$index])) return;
+
+        $currentProduct = $this->cart[$index];
+
+        // Check if switching modes causes a merge conflict with another line item
+        $existingIndex = collect($this->cart)->search(function ($item, $i) use ($currentProduct, $mode, $index) {
+            return $i !== $index && $item['id'] === $currentProduct['id'] && $item['price_mode'] === $mode;
+        });
+
+        if ($existingIndex !== false) {
+            // Merge quantities with the target line item and delete current duplicate row
+            $this->cart[$existingIndex]['qty'] += $currentProduct['qty'];
+            unset($this->cart[$index]);
+            $this->cart = array_values($this->cart); // Re-index array keys cleanly
+        } else {
+            // Simply update mode and unit price for the current item
             $this->cart[$index]['price_mode'] = $mode;
 
             if ($mode === 'wholesale' && !empty($this->cart[$index]['wholesale_price'])) {
@@ -484,49 +532,34 @@ class PosCheckout extends Component
     }
 
     // update quantity in the cart manually
-    public function updateQuantity(int $productId, $newQty): void
+    public function updateQuantity($index, $newQty): void
     {
+        if (!isset($this->cart[$index])) return;
+
         $qtyFloat = (float)$newQty;
 
-        // 1. Find the index correctly
-        $key = collect($this->cart)->search(function ($item) use ($productId) {
-            return $item['id'] === $productId;
-        });
-
-        if ($key === false) return; 
-
-        // 2. Handle removal
         if ($qtyFloat <= 0) {
-            $this->removeFromCart($productId);
+            $this->removeFromCart($index);
             return;
         }
 
-        // 3. Stock validation
-        $product = Product::with('category')->findOrFail($productId);
-        
-        if ($qtyFloat > (float)$product->stock_level) {
+        $productId = $this->cart[$index]['id'];
+        $product = Product::with('category')->find($productId);
+
+        if ($product && $qtyFloat > (float)$product->stock_level) {
             $this->errorMessage = "Only {$product->stock_level} available.";
-            $this->cart[$key]['qty'] = (float)$product->stock_level;
+            $this->cart[$index]['qty'] = (float)$product->stock_level;
             return;
         }
 
-        // 4. Update the cart using the found $key
-        $this->cart[$key]['qty'] = $qtyFloat;
+        $this->cart[$index]['qty'] = $qtyFloat;
         $this->errorMessage = '';
     }
 
-    public function removeFromCart(int $productId): void
+    public function removeFromCart($index): void
     {
-        // 1. Search for the key where the product ID matches
-        $key = collect($this->cart)->search(function ($item) use ($productId) {
-            return $item['id'] === $productId;
-        });
-
-        // 2. If the key was found, remove it
-        if ($key !== false) {
-            unset($this->cart[$key]);
-            
-            // 3. Optional: Re-index the array so it doesn't leave gaps
+        if (isset($this->cart[$index])) {
+            unset($this->cart[$index]);
             $this->cart = array_values($this->cart);
         }
     }
@@ -689,7 +722,7 @@ class PosCheckout extends Component
     {
         // 🌾 Fetch all ACTIVE Rice management items completely separate from pagination
         $riceManagementProducts = Product::with(['category', 'parent'])
-            ->where('is_active', 1) // 📦 Only include active products
+            ->where('is_active', 1)
             ->where(function($query) {
                 $query->whereHas('category', function($q) {
                     $q->where('name', 'like', '%rice%');
@@ -699,8 +732,8 @@ class PosCheckout extends Component
             ->get();
 
         // 1. Core Catalog Search Query (ACTIVE products only)
-        $products = Product::with(['category', 'supplier']) // 🚀 Eager load supplier model relation entries
-            ->where('is_active', 1) // 📦 Scopes out archived products from the inventory table
+        $products = Product::with(['category', 'supplier'])
+            ->where('is_active', 1)
             ->where(function($query) {
                 $query->where('name', 'like', '%' . $this->search . '%')
                     ->orWhere('sku', 'like', '%' . $this->search . '%');
@@ -713,17 +746,17 @@ class PosCheckout extends Component
             })
             ->paginate(12, ['*'], 'productsPage');
 
-        // 📦 Low Stock Counter (Updated to ignore archived products)
+        // 📦 Low Stock Counter
         $lowStockCount = \App\Models\Product::where('is_active', 1) 
             ->where('hide_from_alerts', false)
             ->whereRaw('stock_level <= low_stock_threshold')
             ->count();
 
-        // ⚙️ SETTINGS ENGINE: Fresh Database Library Source Queries (Sorted Alphabetically)
+        // ⚙️ SETTINGS ENGINE
         $categoriesAlphabetical = \App\Models\Category::orderBy('name', 'asc')->get();
         $suppliersLibrary = \App\Models\Supplier::orderBy('name', 'asc')->get();
 
-        // 🚀 CRITICAL FIX: Instantiate the missing sales queries so metrics build correctly!
+        // 🚀 Sales queries setup
         $salesQuery = \App\Models\Sale::with(['items.product']);
         $transactionsLogQuery = \App\Models\Sale::with(['items.product']);
 
@@ -762,7 +795,39 @@ class PosCheckout extends Component
                 break;
         }
 
-        // Apply Segment Sub-Tab Filter Constraints
+        // 💵 CASH AUDIT: Calculate individual segment totals across all sales in the current timeframe
+        $auditSales = (clone $salesQuery)->where('is_cancelled', false)->get();
+        
+        $this->retailRiceTotal = 0.00;
+        $this->wholesaleRiceTotal = 0.00;
+        $this->systemGroceryTotal = 0.00;
+
+        foreach ($auditSales as $sale) {
+            $grossTotal = $sale->items->sum(fn($item) => ((float)($item->unit_price ?? $item->price ?? 0.00)) * (float)$item->quantity);
+            if ($grossTotal <= 0) continue;
+
+            foreach ($sale->items as $item) {
+                if (!$item->product) continue;
+
+                $catId = (int)$item->product->category_id;
+                $isRice = ($catId === 1);
+                $isKilo = str_starts_with($item->product->sku, 'KILO-');
+
+                $itemPaid = (float)($item->unit_price ?? $item->price ?? 0.00) * (float)$item->quantity;
+                $allocatedDiscount = ($itemPaid / $grossTotal) * (float)$sale->discount;
+                $netItemSales = $itemPaid - $allocatedDiscount;
+
+                if ($isRice && $isKilo) {
+                    $this->retailRiceTotal += $netItemSales;
+                } elseif ($isRice && !$isKilo) {
+                    $this->wholesaleRiceTotal += $netItemSales;
+                } else {
+                    $this->systemGroceryTotal += $netItemSales;
+                }
+            }
+        }
+
+        // Apply Segment Sub-Tab Filter Constraints for the Active View Tab
         if (($this->reports_sub_tab ?? '') === 'retail_rice') {
             $salesQuery->whereHas('items.product', function ($query) {
                 $query->where('category_id', 1)->where('sku', 'like', 'KILO-%');
@@ -778,11 +843,8 @@ class PosCheckout extends Component
                 $query->where('category_id', 1)->where('sku', 'not like', 'KILO-%');
             });
         } elseif (($this->reports_sub_tab ?? '') === 'other_products') {
-            
-            // ✨ FIX: Check if a specific numeric category ID is selected 
             if (!empty($this->other_product_category) && is_numeric($this->other_product_category)) {
                 $selectedCatId = (int)$this->other_product_category;
-                
                 $salesQuery->whereHas('items.product', function ($query) use ($selectedCatId) {
                     $query->where('category_id', $selectedCatId);
                 });
@@ -790,7 +852,6 @@ class PosCheckout extends Component
                     $query->where('category_id', $selectedCatId);
                 });
             } else {
-                // Fallback: If "All Non-Rice Categories" is chosen, show everything except Rice (ID 1)
                 $salesQuery->whereHas('items.product', function ($query) {
                     $query->where('category_id', '!=', 1);
                 });
@@ -805,7 +866,7 @@ class PosCheckout extends Component
         $dailyDiscounts = 0.00;
         $exactProfitTotal = 0.00;
         $cigaretteRevenueInsideOther = 0.00;
-        $dailyTransactionsCount = $this->todayTransactions->count();
+        $dailyTransactionsCount = $transactionsLogQuery->count();
 
         (clone $salesQuery)->where('is_cancelled', false)
             ->chunkById(100, function ($sales) use (&$dailyRevenue, &$dailyDiscounts, &$exactProfitTotal) {
@@ -815,17 +876,14 @@ class PosCheckout extends Component
                     $entireInvoiceGrossTotal = 0.00; 
                     $hasMatchingItems = false;
 
-                    // 1. Calculate Entire Invoice Gross Total to handle proportional discount splits safely
                     foreach ($sale->items as $item) {
                         if (!$item->product) continue;
                         $actualPrice = (float)($item->unit_price ?? ($item->price ?? ($item->product->selling_price ?? 0.00)));
                         $entireInvoiceGrossTotal += $actualPrice * (float)$item->quantity;
                     }
 
-                    // Avoid division by zero issues
                     if ($entireInvoiceGrossTotal <= 0) continue;
 
-                    // 2. Loop again to extract segment values
                     foreach ($sale->items as $item) {
                         if (!$item->product) continue;
 
@@ -833,14 +891,11 @@ class PosCheckout extends Component
                         $isRice = ($productCategoryId === 1);
                         $isKilo = str_starts_with($item->product->sku, 'KILO-');
 
-                        // Segment evaluations matching Front-end Tabs
                         if (($this->reports_sub_tab ?? '') === 'retail_rice' && (!$isRice || !$isKilo)) continue;
                         if (($this->reports_sub_tab ?? '') === 'whole_rice' && (!$isRice || $isKilo)) continue;
                         
                         if (($this->reports_sub_tab ?? '') === 'other_products') {
-                            if ($isRice) continue; // CRITICAL: Exclude any Rice totals completely from calculations
-
-                            // Apply the dynamic category filter condition during deep metric extraction
+                            if ($isRice) continue;
                             if (!empty($this->other_product_category) && is_numeric($this->other_product_category)) {
                                 if ($productCategoryId !== (int)$this->other_product_category) continue;
                             }
@@ -849,38 +904,29 @@ class PosCheckout extends Component
                         $hasMatchingItems = true;
 
                         $actualUnitPricePaid = (float)($item->unit_price ?? ($item->price ?? ($item->product->selling_price ?? 0.00)));
-                        
-                        // Fetch the purchase item cost from historical row or product master fallback safely
                         $unitCost = (float)($item->cost_price ?? ($item->product->cost_price ?? 0.00));
                         $quantity = (float)$item->quantity;
 
                         $itemTotalPrice = $actualUnitPricePaid * $quantity;
                         $saleGrossRevenue += $itemTotalPrice;
 
-                        // 🛠️ FIX: Determine if unitCost represents a single item or a whole package to avoid inflation
                         if (!empty($item->is_wholesale)) {
-                            // Check if cost_price inside database is already wholesale (e.g. > single unit retail item price)
                             if ($unitCost > $actualUnitPricePaid) {
-                                // The database stored cost price is already a large sack wholesale value, treat as single item package cost
                                 $saleGrossMargin += ($itemTotalPrice - ($unitCost * $quantity));
                             } else {
-                                // The database tracks singular base kg cost, apply the package scale multiplier
                                 $multiplier = ($item->product->wholesale_qty > 0) ? (float)$item->product->wholesale_qty : 1.0;
                                 $totalCostForThisPackage = $unitCost * $multiplier;
                                 $saleGrossMargin += ($actualUnitPricePaid - $totalCostForThisPackage) * $quantity;
                             }
                         } else {
-                            // Standard Retail Math: Total Item Paid minus Total Base Cost Matrix
                             $saleGrossMargin += ($actualUnitPricePaid - $unitCost) * $quantity;
                         }
                     }
 
                     if ($hasMatchingItems) {
-                        // 3. Determine how much of the invoice discount belongs to this tab segment
                         $segmentRatio = $saleGrossRevenue / $entireInvoiceGrossTotal;
                         $allocatedDiscount = (float)$sale->discount * $segmentRatio;
 
-                        // 4. Deduct allocated discounts to find true NET metrics
                         $dailyRevenue += ($saleGrossRevenue - $allocatedDiscount);
                         $dailyDiscounts += $allocatedDiscount;
                         $exactProfitTotal += ($saleGrossMargin - $allocatedDiscount);
@@ -890,21 +936,16 @@ class PosCheckout extends Component
 
         $todayTransactions = $transactionsLogQuery->orderBy('id', 'desc')->paginate(20, ['*'], 'salesLogPage');
 
-        // 4. Procurement Management System Filtering Logic & Consolidation
-        // 🚀 Eager load product and supplier entities
+        // Procurement Management System Filtering Logic & Consolidation
         $purchaseBaseQuery = \App\Models\ProductBatch::with([
             'product.stockAdjustments', 
             'supplier'
         ])
-        /** * 🔥 CRITICAL UPDATE: Filter out retail items and zero-quantity logs at the source.
-         * Excludes items where SKU starts with "KILO" and ignores rows with a 0 quantity change.
-         */
         ->whereHas('product', function($query) {
             $query->where('sku', 'NOT LIKE', 'KILO%');
         })
-        ->where('quantity_added', '!=', 0); // 👈 Exclude raw 0 modifications
+        ->where('quantity_added', '!=', 0);
 
-        // Apply dynamic delivery date timeframe constraints
         switch ($this->purchase_filter ?? 'daily') {
             case 'daily': 
                 $targetDay = !empty($this->selected_day) ? $this->selected_day : date('Y-m-d');
@@ -915,9 +956,7 @@ class PosCheckout extends Component
                 $targetMonthStr = !empty($this->selected_month) ? $this->selected_month : date('Y-m');
                 $year = substr($targetMonthStr, 0, 4);
                 $month = substr($targetMonthStr, 5, 2);
-                
-                $purchaseBaseQuery->whereYear('delivery_date', $year)
-                                ->whereMonth('delivery_date', $month); 
+                $purchaseBaseQuery->whereYear('delivery_date', $year)->whereMonth('delivery_date', $month); 
                 break;
 
             case 'quarterly': 
@@ -933,18 +972,15 @@ class PosCheckout extends Component
                 break;
         }
 
-        // 🏢 Filter by Supplier directly on the batch's indexing column
         if (!empty($this->selected_supplier)) {
             $purchaseBaseQuery->where('supplier_id', $this->selected_supplier);
         }
 
-        // 🌾 DYNAMIC SECOND-LEVEL AQUARIUS RICEMILL PRODUCT FILTER ENGINE
         $aquariusRicemill = \App\Models\Supplier::where('name', 'LIKE', '%Aquarius Ricemill%')->first();
         $aquariusId = $aquariusRicemill ? $aquariusRicemill->id : null;
         $ricemillProducts = [];
 
         if (!empty($this->selected_supplier) && $this->selected_supplier == $aquariusId) {
-            // Collect a distinct catalog array of all non-retail products loaded from this mill, sorted alphabetically
             $ricemillProducts = \App\Models\ProductBatch::with('product')
                 ->where('supplier_id', $aquariusId)
                 ->whereHas('product', function($q) {
@@ -954,22 +990,19 @@ class PosCheckout extends Component
                 ->pluck('product')
                 ->filter()
                 ->unique('id')
-                ->sortBy('name') // 👈 Sorts the collection alphabetically by product name
+                ->sortBy('name')
                 ->values();
 
-            // If a valid secondary product filter option is active, isolate it inside the builder layout context
             if (!empty($this->selected_ricemill_product)) {
                 $purchaseBaseQuery->where('product_id', $this->selected_ricemill_product);
             }
         } else {
-            // Safe Lifecycle Reset: Flush state if focus jumps to a different supplier profile entirely
             $this->selected_ricemill_product = '';
         }
 
         $totalPurchaseCost = 0;
         $estimatedRetailRevenue = 0;
 
-        // Financial calculators naturally process non-zero entities now
         (clone $purchaseBaseQuery)->chunkById(100, function ($batches) use (&$totalPurchaseCost, &$estimatedRetailRevenue) {
             foreach ($batches as $batch) {
                 $costPrice = (float)($batch->cost_price ?? ($batch->product->cost_price ?? 0));
@@ -985,62 +1018,54 @@ class PosCheckout extends Component
 
         $projectedProcurementMargin = $estimatedRetailRevenue - $totalPurchaseCost;
 
-        // 🔄 CONSOLIDATION ENGINE
-        // Note: Handled properly, SUM(quantity_added) will naturally drop combinations that aggregate exactly to 0
         $loggedBatches = $purchaseBaseQuery->select([
-                'product_id',
-                'supplier_id',
-                'delivery_date',
-                \DB::raw('MAX(id) as id'), 
-                \DB::raw('SUM(quantity_added) as quantity_added'), 
-                \DB::raw('MAX(cost_price) as cost_price'), 
-                \DB::raw('MAX(selling_price) as selling_price'),
-                \DB::raw('MAX(num_boxes) as num_boxes'),
-                \DB::raw('MAX(items_per_box) as items_per_box'),
-                \DB::raw('MAX(created_at) as created_at')
-            ])
-            ->groupBy('product_id', 'supplier_id', 'delivery_date')
-            ->having('quantity_added', '!=', 0) // 👈 Protects grouped consolidations from totaling to 0
-            ->orderBy('delivery_date', 'desc')
-            ->orderBy('id', 'desc')
-            ->paginate(25, ['*'], 'purchasesPage');
+            'product_id',
+            'supplier_id',
+            'delivery_date',
+            \DB::raw('num_boxes IS NULL as is_audit'),
+            \DB::raw('MAX(id) as id'), 
+            \DB::raw('SUM(quantity_added) as quantity_added'), 
+            \DB::raw('MAX(cost_price) as cost_price'), 
+            \DB::raw('MAX(selling_price) as selling_price'),
+            \DB::raw('MAX(num_boxes) as num_boxes'),
+            \DB::raw('MAX(items_per_box) as items_per_box'),
+            \DB::raw('MAX(created_at) as created_at')
+        ])
+        ->groupBy('product_id', 'supplier_id', 'delivery_date', \DB::raw('num_boxes IS NULL'))
+        ->having('quantity_added', '!=', 0)
+        ->orderBy('delivery_date', 'desc')
+        ->orderBy('id', 'desc')
+        ->paginate(25, ['*'], 'purchasesPage');
 
-        // 5. Checkout Basket Subtotals
+        // Checkout Basket Subtotals
         $cartSubtotal = $this->getSubtotalAmount();
         $liveCalculatedTotal = $this->getTotalAmount();
 
-        // 📱 For digital transactions =================
+        // Digital transactions logic
         $digitalQuery = \App\Models\DigitalTransaction::where('is_active', true);
 
-        // 🔥 1. Apply Service Type Filter Dropdown Dynamically
         if (!empty($this->filter_service)) {
             $digitalQuery->where('service_type', $this->filter_service);
         }
 
-        // 2. Apply Timeframe Scope Filter dynamically
         if ($this->filter_type === 'daily') {
             $digitalQuery->whereDate('logged_at', $this->filter_date);
         } else {
-            $carbonMonth = Carbon::parse($this->filter_month);
+            $carbonMonth = \Carbon\Carbon::parse($this->filter_month);
             $digitalQuery->whereYear('logged_at', $carbonMonth->year)
                         ->whereMonth('logged_at', $carbonMonth->month);
         }
 
-        // Execute Paginated Query for the history log table matrix
         $digitalTransactions = $digitalQuery->latest()->paginate(10, ['*'], 'digitalPage');
 
-        // 🛠️ DYNAMIC BACKTRACKING MODIFICATION START
-        // 1. Establish the historical point-in-time boundary for the balances snapshot
         $endOfPeriod = now('Asia/Manila');
 
         if ($this->filter_type === 'daily' && $this->filter_date) {
-            $endOfPeriod = Carbon::parse($this->filter_date, 'Asia/Manila')->endOfDay();
+            $endOfPeriod = \Carbon\Carbon::parse($this->filter_date, 'Asia/Manila')->endOfDay();
         } elseif ($this->filter_type === 'monthly' && $this->filter_month) {
-            $endOfPeriod = Carbon::parse($this->filter_month . '-01', 'Asia/Manila')->endOfMonth();
+            $endOfPeriod = \Carbon\Carbon::parse($this->filter_month . '-01', 'Asia/Manila')->endOfMonth();
         }
 
-        // 2. Query cumulative sums from day one up until that historical boundary timestamp
-        // (Keep these unfiltered by service type so your absolute running ledger stays mathematically correct)
         $runningCashOnHand = \App\Models\DigitalTransaction::where('is_active', true)
             ->where('logged_at', '<=', $endOfPeriod)
             ->sum('cash_on_hand_change');
@@ -1048,54 +1073,116 @@ class PosCheckout extends Component
         $runningGCashBalance = \App\Models\DigitalTransaction::where('is_active', true)
             ->where('logged_at', '<=', $endOfPeriod)
             ->sum('gcash_balance_change');
-        // 🛠️ DYNAMIC BACKTRACKING MODIFICATION END
 
-        // 3. Calculate filtered shifts based on active records inside the selected filters scope
         $totalCashMovement = (clone $digitalQuery)->sum('cash_on_hand_change');
         $totalGCashMovement = (clone $digitalQuery)->sum('gcash_balance_change');
-        $totalFeesEarned = (clone $digitalQuery)->sum('service_fee');
+        $totalFeesEarned = (clone $digitalQuery)
+            ->where('is_active', true)
+            ->where('service_type', '!=', 'fee_withdrawal')
+            ->sum('service_fee');
 
-        // 4. Volume Breakdown Sums (Scoped strictly to the active date + service platform filters)
+        $totalFeesWithdrawn = \App\Models\DigitalTransaction::where('is_active', true)
+            ->where('service_type', 'fee_withdrawal')
+            ->where('withdrawal_period_type', $this->filter_type)
+            ->where(
+                'withdrawal_period_target',
+                $this->filter_type === 'daily' ? $this->filter_date : $this->filter_month
+            )
+            ->sum('amount');
+
         $totalCashInVolume   = (clone $digitalQuery)->where('service_type', 'gcash_cash_in')->sum('amount');
         $totalCashOutVolume  = (clone $digitalQuery)->where('service_type', 'gcash_cash_out')->sum('amount');
         $totalELoadVolume    = (clone $digitalQuery)->where('service_type', 'eload')->sum('amount');
 
-        return view('livewire.pos-checkout', [
-            'riceManagementProducts'     => $riceManagementProducts,
-            'products'                   => $products,
-            'lowStockCount'              => $lowStockCount,
-            'availableSuppliers'         => $suppliersLibrary, 
-            'dailyRevenue'               => $dailyRevenue,
-            'dailyDiscounts'             => $dailyDiscounts,
-            'dailyTransactionsCount'     => $dailyTransactionsCount,
-            
-            // 🔒 FIX HERE: Provide both key handles to prevent variable undefined errors in Blade layouts
-            'exactProfitTotal'           => $exactProfitTotal, 
-            'dailyProfitBaseline'        => $exactProfitTotal,
-            'cigaretteRevenueInsideOther'=> $cigaretteRevenueInsideOther,
+        // 📊 PERSISTED RECONCILIATION ENGINE
+        $targetReportDate = !empty($this->selected_day) ? $this->selected_day : date('Y-m-d');
+        $savedReport = \App\Models\DailyCashReport::where('report_date', $targetReportDate)->first();
 
-            'todayTransactions'          => $todayTransactions,
-            'purchaseLogs'               => $loggedBatches,
-            'loggedBatches'              => $loggedBatches, 
-            'totalPurchaseCost'          => $totalPurchaseCost,
-            'estimatedRetailRevenue'     => $estimatedRetailRevenue,
-            'projectedProcurementMargin' => $projectedProcurementMargin,
-            'subtotal'                   => $cartSubtotal,
-            'total'                      => $liveCalculatedTotal,
-            'categories'                 => $categoriesAlphabetical,
-            'categoriesAlphabetical'     => $categoriesAlphabetical, 
-            'suppliers'                  => $suppliersLibrary,
-            'aquariusId'                 => $aquariusId,
-            'ricemillProducts'           => $ricemillProducts,
-            'digitalTransactions'        => $digitalTransactions,
-            'totalCashMovement'          => $totalCashMovement,
-            'totalGCashMovement'         => $totalGCashMovement,
-            'totalFeesEarned'            => $totalFeesEarned,
-            'runningCashOnHand'          => $runningCashOnHand,
-            'runningGCashBalance'        => $runningGCashBalance,
-            'totalCashInVolume'          => $totalCashInVolume,
-            'totalCashOutVolume'         => $totalCashOutVolume,
-            'totalELoadVolume'           => $totalELoadVolume,
+        // Auto-fill values from saved report if exists and properties are empty
+        if ($savedReport) {
+            $this->beginning_cash = $this->beginning_cash ?? $savedReport->beginning_cash;
+            $this->payout_expenses = $this->payout_expenses ?? $savedReport->payout_expenses;
+            $this->manual_grocery_sales = $this->manual_grocery_sales ?? $savedReport->manual_grocery_sales;
+            $this->actual_cash_on_hand = $this->actual_cash_on_hand ?? $savedReport->actual_cash_counted;
+        }
+
+        $beginningCash = (float)($this->beginning_cash ?? 0.00);
+        $payoutExpenses = (float)($this->payout_expenses ?? 0.00);
+        $manualGrocerySales = (float)($this->manual_grocery_sales ?? 0.00);
+        $actualCashCounted = (float)($this->actual_cash_on_hand ?? 0.00);
+
+        // Calculated Expected Sales Revenue (Pure Sales)
+        $computedTotalExpectedSales = 0.00;
+        if ($this->include_retail_rice ?? true) $computedTotalExpectedSales += $this->retailRiceTotal;
+        if ($this->include_wholesale_rice ?? true) $computedTotalExpectedSales += $this->wholesaleRiceTotal;
+        if ($this->include_other_grocery ?? true) $computedTotalExpectedSales += $this->systemGroceryTotal;
+        $computedTotalExpectedSales += $manualGrocerySales;
+
+        // Net Actual Sales Generated = (Cash in Drawer - Float) + Expenses paid from drawer
+        $actualNetSalesGenerated = ($actualCashCounted - $beginningCash) + $payoutExpenses;
+
+        // Expected Cash balance left in drawer
+        $expectedCashInDrawer = ($beginningCash + $computedTotalExpectedSales) - $payoutExpenses;
+
+        // Over / Short Variance
+        $cashVariance = $actualCashCounted - $expectedCashInDrawer;
+
+        // Load historical reports list for comparative review
+        $historicalCashReports = \App\Models\DailyCashReport::orderBy('report_date', 'desc')->paginate(10, ['*'], 'reportsPage');
+        $actualNetSalesGenerated = ((float)$this->actual_cash_on_hand - (float)$this->beginning_cash) + (float)$this->payout_expenses;
+
+        return view('livewire.pos-checkout', [
+            'riceManagementProducts'      => $riceManagementProducts,
+            'products'                    => $products,
+            'lowStockCount'               => $lowStockCount,
+            'availableSuppliers'          => $suppliersLibrary, 
+            'dailyRevenue'                => $dailyRevenue,
+            'dailyDiscounts'              => $dailyDiscounts,
+            'dailyTransactionsCount'      => $dailyTransactionsCount,
+            'exactProfitTotal'            => $exactProfitTotal, 
+            'dailyProfitBaseline'         => $exactProfitTotal,
+            'cigaretteRevenueInsideOther' => $cigaretteRevenueInsideOther,
+            'todayTransactions'           => $todayTransactions,
+            'purchaseLogs'                => $loggedBatches,
+            'loggedBatches'               => $loggedBatches, 
+            'totalPurchaseCost'           => $totalPurchaseCost,
+            'estimatedRetailRevenue'      => $estimatedRetailRevenue,
+            'projectedProcurementMargin'  => $projectedProcurementMargin,
+            'subtotal'                    => $cartSubtotal,
+            'total'                       => $liveCalculatedTotal,
+            'categories'                  => $categoriesAlphabetical,
+            'categoriesAlphabetical'      => $categoriesAlphabetical, 
+            'suppliers'                   => $suppliersLibrary,
+            'aquariusId'                  => $aquariusId,
+            'ricemillProducts'            => $ricemillProducts,
+            'digitalTransactions'         => $digitalTransactions,
+            'totalCashMovement'           => $totalCashMovement,
+            'totalGCashMovement'          => $totalGCashMovement,
+            'totalFeesEarned'             => $totalFeesEarned,
+            'totalFeesWithdrawn'          => $totalFeesWithdrawn,
+            'runningCashOnHand'           => $runningCashOnHand,
+            'runningGCashBalance'         => $runningGCashBalance,
+            'totalCashInVolume'           => $totalCashInVolume,
+            'totalCashOutVolume'          => $totalCashOutVolume,
+            'totalELoadVolume'            => $totalELoadVolume,
+
+            // Persisted Cash Audit & Reconciliation Variables
+            'retailRiceTotal'             => $this->retailRiceTotal,
+            'wholesaleRiceTotal'          => $this->wholesaleRiceTotal,
+            'systemGroceryTotal'          => $this->systemGroceryTotal,
+            'beginningCash'               => $beginningCash,
+            'payoutExpenses'              => $payoutExpenses,
+            'manualGrocerySales'          => $manualGrocerySales,
+            'computedTotalExpectedSales'  => $computedTotalExpectedSales,
+            'expectedCashInDrawer'        => $expectedCashInDrawer,
+            'actualCashCounted'           => $actualCashCounted,
+            'cashVariance'                => $cashVariance,
+            'savedReport'                 => $savedReport,
+            'historicalCashReports'       => $historicalCashReports,
+            'include_retail_rice'    => $this->include_retail_rice,
+            'include_wholesale_rice' => $this->include_wholesale_rice,
+            'include_other_grocery'  => $this->include_other_grocery,
+            'actualNetSalesGenerated' => $actualNetSalesGenerated,
         ]);
     }
 
@@ -1550,7 +1637,7 @@ class PosCheckout extends Component
             $newStock = (float)$this->audit_new_stock_value; 
             $delta = $newStock - $oldStock;
 
-            // 1. Maintain Standard Discrepancy Registry Log
+            // 1. Log adjustment in StockAdjustment table
             StockAdjustment::create([
                 'product_id' => $product->id,
                 'old_stock'  => $oldStock,
@@ -1559,20 +1646,7 @@ class PosCheckout extends Component
                 'remarks'    => $this->audit_remarks_message,
             ]);
 
-            // 🚀 2. LOG NEW ROW ENTRY IN PRODUCT_BATCHES WITH CUSTOM DELIVERY DATE
-            // Passing the user's tracked back-date allows accurate chronological consolidation!
-            $product->batches()->create([
-                'supplier_id'    => $product->supplier_id ?: null,
-                'cost_price'     => (float)$product->cost_price,
-                'selling_price'  => (float)$product->selling_price,
-                'quantity_added' => $delta, 
-                'delivery_date'  => $this->audit_delivery_date, // 📅 Injected dynamic historical target date
-                'num_boxes'      => null, 
-                'items_per_box'  => null,
-                'cost_per_box'   => null,
-            ]);
-
-            // 3. Apply the absolute new figure down to the main product index card counters
+            // 2. Update stock level without modifying delivery batch records
             $product->update(['stock_level' => $newStock]);
         });
 
@@ -2099,4 +2173,161 @@ class PosCheckout extends Component
 
         session()->flash('message', 'Product moved to archives successfully.');
     }
+
+    // Auto-calculate suggested payout when user changes target period or date
+    public function updatedWithdrawTargetMonth() { $this->calculateWithdrawalSuggestedAmount(); }
+    public function updatedWithdrawTargetDate() { $this->calculateWithdrawalSuggestedAmount(); }
+    public function updatedWithdrawPeriodType() { $this->calculateWithdrawalSuggestedAmount(); }
+
+    public function calculateWithdrawalSuggestedAmount()
+    {
+        // 1. Build base query matching your top card exact filters
+        $query = \App\Models\DigitalTransaction::where('is_active', true)
+            ->where('service_type', '!=', 'fee_withdrawal');
+
+        // 2. Apply target timeframe scope
+        if ($this->withdraw_period_type === 'daily') {
+            $query->whereDate('logged_at', $this->withdraw_target_date);
+        } else {
+            $carbonMonth = Carbon::parse($this->withdraw_target_month . '-01');
+            $query->whereYear('logged_at', $carbonMonth->year)
+                ->whereMonth('logged_at', $carbonMonth->month);
+        }
+
+        // 3. Gross service fees earned during period
+        $grossFees = $query->sum('service_fee');
+
+        // 4. Subtract any prior withdrawals already recorded for this specific period
+        $alreadyWithdrawn = \App\Models\DigitalTransaction::where('is_active', true)
+            ->where('service_type', 'fee_withdrawal')
+            ->where('withdrawal_period_type', $this->withdraw_period_type)
+            ->where('withdrawal_period_target', $this->withdraw_period_type === 'daily' ? $this->withdraw_target_date : $this->withdraw_target_month)
+            ->sum('amount');
+
+        // 5. Final available fee margin
+        $this->fee_withdraw_amount = max(0, $grossFees - $alreadyWithdrawn);
+    }
+
+    /**
+     * Submit Payout / Fee Withdrawal
+     */
+    public function withdrawCollectedFees()
+    {
+        $this->validate([
+            'fee_withdraw_amount'   => 'required|numeric|min:0.01',
+            'digital_date'          => 'required|date',
+            'withdraw_source'       => 'required|in:cash_drawer,gcash_wallet',
+            'withdraw_period_type'  => 'required|in:daily,monthly',
+            'withdraw_target_date'  => 'required_if:withdraw_period_type,daily',
+            'withdraw_target_month' => 'required_if:withdraw_period_type,monthly',
+        ]);
+
+        $isCash = $this->withdraw_source === 'cash_drawer';
+        
+        // Human-readable reference label
+        if ($this->withdraw_period_type === 'daily') {
+            $periodLabel = Carbon::parse($this->withdraw_target_date)->format('M d, Y');
+            $targetValue = $this->withdraw_target_date;
+        } else {
+            $periodLabel = Carbon::parse($this->withdraw_target_month . '-01')->format('F Y');
+            $targetValue = $this->withdraw_target_month;
+        }
+
+        $refNote = "PROFIT-PAYOUT (" . strtoupper($this->withdraw_period_type) . ": " . $periodLabel . ")";
+
+        DigitalTransaction::create([
+            'service_type'             => 'fee_withdrawal',
+            'logged_at'                => $this->digital_date,
+            'amount'                   => $this->fee_withdraw_amount,
+            'service_fee'              => 0,
+            'cash_on_hand_change'      => $isCash ? -$this->fee_withdraw_amount : 0,
+            'gcash_balance_change'     => !$isCash ? -$this->fee_withdraw_amount : 0,
+            'reference_number'         => $refNote,
+            'withdrawal_period_type'   => $this->withdraw_period_type,
+            'withdrawal_period_target' => $targetValue,
+        ]);
+
+        session()->flash('fee_withdraw_success', "Successfully recorded payout of ₱" . number_format($this->fee_withdraw_amount, 2) . " for {$periodLabel}!");
+
+        $this->reset(['fee_withdraw_amount']);
+    }
+
+    public function saveDailyCashReport()
+    {
+        $targetDay = !empty($this->selected_day) ? $this->selected_day : date('Y-m-d');
+
+        $beginningCash = (float) ($this->beginning_cash ?? 0);
+        $manualGrocery = (float) ($this->manual_grocery_sales ?? 0);
+        $payoutExpenses = (float) ($this->payout_expenses ?? 0);
+        $actualCash = (float) ($this->actual_cash_on_hand ?? 0);
+
+        // 1. Total System/Manual Expected Sales (Revenue only, excluding Beginning Cash Float)
+        $computedTotalExpectedSales = 0.00;
+        if ($this->include_retail_rice ?? true) $computedTotalExpectedSales += $this->retailRiceTotal;
+        if ($this->include_wholesale_rice ?? true) $computedTotalExpectedSales += $this->wholesaleRiceTotal;
+        if ($this->include_other_grocery ?? true) $computedTotalExpectedSales += $this->systemGroceryTotal;
+        $computedTotalExpectedSales += $manualGrocery;
+
+        // 2. Calculate Actual Net Sales collected in the drawer (Actual Cash - Float + Expenses paid out)
+        $actualNetSalesCollected = ($actualCash - $beginningCash) + $payoutExpenses;
+
+        // 3. Expected Total Cash in Drawer at End of Day
+        $expectedCashInDrawer = $beginningCash + $computedTotalExpectedSales - $payoutExpenses;
+
+        // 4. Variance (Actual Net Sales vs Expected Sales OR Actual Cash vs Expected Cash)
+        $cashVariance = $actualCash - $expectedCashInDrawer;
+
+        \App\Models\DailyCashReport::updateOrCreate(
+            ['report_date' => $targetDay],
+            [
+                'beginning_cash'          => $beginningCash,
+                'retail_rice_sales'       => $this->retailRiceTotal,
+                'wholesale_rice_sales'    => $this->wholesaleRiceTotal,
+                'system_grocery_sales'   => $this->systemGroceryTotal,
+                'manual_grocery_sales'    => $manualGrocery,
+                'total_expected_sales'    => $computedTotalExpectedSales, // Pure Sales
+                'payout_expenses'         => $payoutExpenses,
+                'expected_cash_in_drawer' => $expectedCashInDrawer,
+                'actual_cash_counted'     => $actualCash,
+                'cash_variance'           => $cashVariance,
+                'user_id'                 => auth()->id(),
+            ]
+        );
+
+        session()->flash('message', 'Daily cash report saved successfully for ' . $targetDay);
+    }
+
+    // Edit historical report: loads data into the active inputs
+    public function editDailyCashReport($id)
+    {
+        $report = \App\Models\DailyCashReport::findOrFail($id);
+
+        // Sync selected date and inputs
+        $this->selected_day = $report->report_date;
+        $this->beginning_cash = $report->beginning_cash;
+        $this->payout_expenses = $report->payout_expenses;
+        $this->manual_grocery_sales = $report->manual_grocery_sales;
+        $this->actual_cash_on_hand = $report->actual_cash_counted;
+
+        session()->flash('message', "Loaded reconciliation report for {$report->report_date} for editing.");
+    }
+
+    // Delete historical report
+    public function deleteDailyCashReport($id)
+    {
+        $report = \App\Models\DailyCashReport::findOrFail($id);
+        $deletedDate = $report->report_date;
+        $report->delete();
+
+        // Reset inputs if the deleted report was currently selected
+        if ($this->selected_day === $deletedDate) {
+            $this->beginning_cash = null;
+            $this->payout_expenses = null;
+            $this->manual_grocery_sales = null;
+            $this->actual_cash_on_hand = null;
+        }
+
+        session()->flash('message', "Daily cash report for {$deletedDate} deleted successfully.");
+    }
+
 }
