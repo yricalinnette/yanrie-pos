@@ -904,13 +904,70 @@ class PosCheckout extends Component
                         $hasMatchingItems = true;
 
                         $actualUnitPricePaid = (float)($item->unit_price ?? ($item->price ?? ($item->product->selling_price ?? 0.00)));
-                        $unitCost = (float)($item->cost_price ?? ($item->product->cost_price ?? 0.00));
+                        $unitCost = (float)($item->cost_price ?? 0.00);
                         $quantity = (float)$item->quantity;
+
+                        // 🚚 HISTORICAL DELIVERY-DATE PRICE RESOLUTION
+                        if ($unitCost <= 0 || $unitCost == $actualUnitPricePaid) {
+                            $saleDate = \Carbon\Carbon::parse($sale->created_at)->toDateString();
+
+                            // First, try to find a batch specifically for the retail kilo item itself
+                            $effectiveBatch = \App\Models\ProductBatch::where('product_id', $item->product_id)
+                                ->where('delivery_date', '<=', $saleDate)
+                                ->orderBy('delivery_date', 'desc')
+                                ->orderBy('id', 'desc')
+                                ->first();
+
+                            if ($effectiveBatch) {
+                                $unitCost = (float)($effectiveBatch->cost_price ?? 0.00);
+                            } elseif ($isRice && $isKilo && $item->product->parent_id) {
+                                // If no retail batch exists, lookup the parent sack batch and divide by weight
+                                $parentBatch = \App\Models\ProductBatch::where('product_id', $item->product->parent_id)
+                                    ->where('delivery_date', '<=', $saleDate)
+                                    ->orderBy('delivery_date', 'desc')
+                                    ->orderBy('id', 'desc')
+                                    ->first();
+
+                                if (!$parentBatch) {
+                                    $parentBatch = \App\Models\ProductBatch::where('product_id', $item->product->parent_id)
+                                        ->orderBy('delivery_date', 'asc')
+                                        ->orderBy('id', 'asc')
+                                        ->first();
+                                }
+
+                                if ($parentBatch) {
+                                    $parentCost = (float)($parentBatch->cost_price ?? 0.00);
+                                    
+                                    // Determine division factor (conversion factor or default 50kg)
+                                    $divisor = (float)($item->product->parent->conversion_factor ?? 50.00);
+                                    if ($divisor <= 0) $divisor = 50.00;
+
+                                    // If parent cost is a full bag price (> 500), convert to per-kilo cost
+                                    $unitCost = ($parentCost > 500) ? ($parentCost / $divisor) : $parentCost;
+                                } else {
+                                    $unitCost = (float)($item->product->cost_price ?? 0.00);
+                                }
+                            } else {
+                                // Fallback to earliest batch or product table cost
+                                $earliestBatch = \App\Models\ProductBatch::where('product_id', $item->product_id)
+                                    ->orderBy('delivery_date', 'asc')
+                                    ->orderBy('id', 'asc')
+                                    ->first();
+
+                                $unitCost = $earliestBatch 
+                                    ? (float)($earliestBatch->cost_price ?? 0.00) 
+                                    : (float)($item->product->cost_price ?? 0.00);
+                            }
+                        }
 
                         $itemTotalPrice = $actualUnitPricePaid * $quantity;
                         $saleGrossRevenue += $itemTotalPrice;
 
-                        if (!empty($item->is_wholesale)) {
+                        // 💡 ACCURATE MARGIN ENGINE
+                        if ($isKilo) {
+                            // Per Kilo Unit Profit
+                            $saleGrossMargin += ($actualUnitPricePaid - $unitCost) * $quantity;
+                        } elseif (!empty($item->is_wholesale)) {
                             if ($unitCost > $actualUnitPricePaid) {
                                 $saleGrossMargin += ($itemTotalPrice - ($unitCost * $quantity));
                             } else {
