@@ -1148,7 +1148,10 @@ class PosCheckout extends Component
             ->sum('amount');
 
         $totalCashInVolume   = (clone $digitalQuery)->where('service_type', 'gcash_cash_in')->sum('amount');
-        $totalCashOutVolume  = (clone $digitalQuery)->where('service_type', 'gcash_cash_out')->sum('amount');
+        // Updated: Net Cash-Out Volume (Principal minus Fee)
+        $totalCashOutVolume  = (float) (clone $digitalQuery)
+            ->where('service_type', 'gcash_cash_out')
+            ->sum(\Illuminate\Support\Facades\DB::raw('amount - service_fee'));
         $totalELoadVolume    = (clone $digitalQuery)->where('service_type', 'eload')->sum('amount');
 
         // 📊 PERSISTED RECONCILIATION ENGINE
@@ -1186,7 +1189,6 @@ class PosCheckout extends Component
 
         // Load historical reports list for comparative review
         $historicalCashReports = \App\Models\DailyCashReport::orderBy('report_date', 'desc')->paginate(10, ['*'], 'reportsPage');
-        $actualNetSalesGenerated = ((float)$this->actual_cash_on_hand - (float)$this->beginning_cash) + (float)$this->payout_expenses;
 
         return view('livewire.pos-checkout', [
             'riceManagementProducts'      => $riceManagementProducts,
@@ -1236,10 +1238,10 @@ class PosCheckout extends Component
             'cashVariance'                => $cashVariance,
             'savedReport'                 => $savedReport,
             'historicalCashReports'       => $historicalCashReports,
-            'include_retail_rice'    => $this->include_retail_rice,
-            'include_wholesale_rice' => $this->include_wholesale_rice,
-            'include_other_grocery'  => $this->include_other_grocery,
-            'actualNetSalesGenerated' => $actualNetSalesGenerated,
+            'include_retail_rice'         => $this->include_retail_rice,
+            'include_wholesale_rice'      => $this->include_wholesale_rice,
+            'include_other_grocery'       => $this->include_other_grocery,
+            'actualNetSalesGenerated'     => $actualNetSalesGenerated,
         ]);
     }
 
